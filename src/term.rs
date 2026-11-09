@@ -267,7 +267,8 @@ impl Terminal {
         let name = caps.name.to_lowercase();
         let term = std::env::var("TERM").unwrap_or_default();
         let kitty = name.contains("kitty") || term == "xterm-kitty" || std::env::var_os("KITTY_WINDOW_ID").is_some();
-        let ghostty = name.contains("ghostty") || std::env::var("TERM_PROGRAM").map(|t| t.eq_ignore_ascii_case("ghostty")).unwrap_or(false);
+        let ghostty =
+            name.contains("ghostty") || term == "xterm-ghostty" || std::env::var("TERM_PROGRAM").map(|t| t.eq_ignore_ascii_case("ghostty")).unwrap_or(false);
         if caps.graphics && (kitty || ghostty) {
             caps.placeholders = true;
         }

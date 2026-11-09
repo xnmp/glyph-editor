@@ -16,8 +16,10 @@ USAGE:
     With files, the vault is the nearest ancestor with .obsidian/ or .git/.
 
 OPTIONS:
-    --kitty             open in a new kitty window tuned for writing (line
-                        spacing, padding, a prose-friendly font if installed)
+    --kitty             make sure glyph gets kitty graphics: runs right here
+                        if this terminal supports them (kitty, Ghostty,
+                        WezTerm…), otherwise opens a new kitty window tuned
+                        for writing (line spacing, padding, a writing font)
     --theme NAME        terminal (default), dark, light, nord, gruvbox
     --typography MODE   proportional | terminal | auto (default: proportional
                         Inter text via kitty graphics when supported)
@@ -78,13 +80,7 @@ fn main() {
             _ => paths.push(PathBuf::from(a)),
         }
     }
-    if kitty {
-        // re-run ourselves inside a kitty window tuned for writing
-        let err = launch_kitty(&config);
-        eprintln!("glyph: could not start kitty: {err}");
-        std::process::exit(1);
-    }
-    if let Err(e) = run(paths, config, mode) {
+    if let Err(e) = run(paths, config, mode, kitty) {
         eprintln!("glyph: {e}");
         std::process::exit(1);
     }
@@ -117,6 +113,10 @@ pub fn kitty_args(config: &Config, exe: &str, rest: &[String], font: Option<Stri
     a
 }
 
+fn on_path(bin: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+}
+
 fn launch_kitty(config: &Config) -> std::io::Error {
     use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "glyph".into());
@@ -129,7 +129,7 @@ fn launch_kitty(config: &Config) -> std::io::Error {
     std::process::Command::new("kitty").args(kitty_args(config, &exe, &rest, font)).exec()
 }
 
-fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
+fn run(paths: Vec<PathBuf>, config: Config, mode: Mode, want_kitty: bool) -> std::io::Result<()> {
     let first = paths.first().cloned().unwrap_or_else(|| PathBuf::from("."));
     let root = vault::find_root(&first);
     let mut term = Terminal::open()?;
@@ -137,6 +137,18 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
     term.enter();
     let (caps, pending) = if std::env::var_os("GLYPH_NO_PROBE").is_some() { (Default::default(), vec![]) } else { term.probe(Duration::from_millis(600)) };
     let mut caps = caps;
+    // --kitty: stay here when this terminal already speaks kitty graphics;
+    // otherwise re-run ourselves in a kitty window tuned for writing
+    let mut kitty_note = None;
+    if want_kitty && !caps.graphics {
+        if on_path("kitty") {
+            drop(term);
+            let err = launch_kitty(&config);
+            eprintln!("glyph: could not start kitty: {err}");
+            std::process::exit(1);
+        }
+        kitty_note = Some("This terminal has no kitty graphics and kitty isn't installed. Running here with plain text");
+    }
     if caps.cell_w == 0 {
         caps.cell_w = 10;
         caps.cell_h = 20;
@@ -165,6 +177,9 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
     }
     for t in &mut app.tabs {
         t.view.mode = mode;
+    }
+    if let Some(n) = kitty_note {
+        app.set_status(n);
     }
     for e in pending {
         app.handle(e);

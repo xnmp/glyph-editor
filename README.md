@@ -22,8 +22,9 @@ It's one native Rust binary with micro-style keys, mouse support and no modes.
   placed as images, with the caret, selection and search hits drawn in. Clicks land on the
   exact glyph via pixel-precise mouse reporting (SGR-Pixels, `?1016`). Code blocks and tables
   stay monospace on purpose. `--typography terminal` uses your terminal font everywhere.
-- **`glyph --kitty`** opens a new kitty window tuned for writing: 125% line height, 20px
-  padding, and a writing font if one is installed (iA Writer Duo/Mono, IBM Plex Mono, JetBrains
+- **`glyph --kitty`** makes sure you get kitty graphics. In a terminal that already supports
+  them (kitty, Ghostty, WezTerm…) it just runs there. Otherwise it opens a new kitty window
+  tuned for writing: 125% line height, 20px padding, and a writing font if one is installed (iA Writer Duo/Mono, IBM Plex Mono, JetBrains
   Mono, Iosevka).
 - **Looks like Obsidian:**
   - an inline title (the note name, large, above the text)
@@ -94,14 +95,14 @@ overrides the font used for heading images.
 glyph notes.md          # open a file (vault = nearest folder with .obsidian/ or .git/)
 glyph ~/Notes           # open a vault: shows README/index or the quick switcher
 glyph --read doc.md     # reading view
-glyph --kitty notes.md  # new kitty window with writing-friendly spacing and font
+glyph --kitty notes.md  # here if this terminal has kitty graphics, else a tuned kitty window
 ```
 
 Options:
 
 - `--theme terminal|dark|light|nord|gruvbox`
 - `--typography proportional|terminal|auto`
-- `--kitty`: launch in a writing-tuned kitty window
+- `--kitty`: run here if the terminal has kitty graphics, else in a writing-tuned kitty window
 - `--headings osc66|image|plain`
 - `--no-images`, `--no-remote-images`, `--no-autosave`
 - `--source`, `--read`, `--line-numbers`

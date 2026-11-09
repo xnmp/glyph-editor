@@ -24,6 +24,10 @@ fn set_size(fd: RawFd, cols: u16, rows: u16) {
 }
 
 fn spawn(args: &[&str], dir: &std::path::Path, cols: u16, rows: u16) -> Pty {
+    spawn_env(args, dir, cols, rows, &[])
+}
+
+fn spawn_env(args: &[&str], dir: &std::path::Path, cols: u16, rows: u16, env: &[(&str, &str)]) -> Pty {
     let (mut m, mut s) = (0, 0);
     unsafe {
         assert_eq!(libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()), 0);
@@ -31,6 +35,9 @@ fn spawn(args: &[&str], dir: &std::path::Path, cols: u16, rows: u16) -> Pty {
     set_size(m, cols, rows);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_glyph"));
     cmd.args(args).current_dir(dir).env("TERM", "xterm-kitty").env_remove("GLYPH_NO_PROBE").env("HOME", dir);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     unsafe {
         cmd.stdin(Stdio::from_raw_fd(libc::dup(s))).stdout(Stdio::from_raw_fd(libc::dup(s))).stderr(Stdio::from_raw_fd(libc::dup(s)));
         cmd.pre_exec(move || {
@@ -216,20 +223,45 @@ fn real_binary_typesets_prose_with_kitty_graphics() {
     }
 }
 
-#[test]
-fn kitty_launcher_passes_writing_options() {
-    // a stand-in `kitty` that prints its arguments
-    let dir = tmpdir("kittylaunch");
+/// A directory with a stand-in `kitty` that prints its arguments, and a PATH using it.
+fn fake_kitty(name: &str) -> (std::path::PathBuf, String) {
+    let dir = tmpdir(name);
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let fake = bin.join("kitty");
-    std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    std::fs::write(&fake, "#!/bin/sh\nprintf 'KITTY-ARG %s\\n' \"$@\"\nsleep 1\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    let o = Command::new(env!("CARGO_BIN_EXE_glyph")).args(["--kitty", "note.md"]).env("PATH", path).env("HOME", &dir).output().unwrap();
-    let args = String::from_utf8_lossy(&o.stdout).to_string();
-    assert!(args.contains("modify_font=cell_height 125%"), "{args}");
-    assert!(args.contains("window_padding_width=20"));
-    assert!(args.lines().last() == Some("note.md") && !args.contains("--kitty"), "re-runs glyph with the user's args: {args}");
+    (dir, path)
+}
+
+#[test]
+fn kitty_flag_stays_in_a_graphics_terminal() {
+    // Ghostty/kitty/WezTerm already speak kitty graphics: no new window
+    let (dir, path) = fake_kitty("kittystay");
+    std::fs::write(dir.join("note.md"), "hello there").unwrap();
+    let mut p = spawn_env(&["--kitty", "note.md"], &dir, 80, 24, &[("PATH", &path), ("TERM", "xterm-ghostty")]);
+    p.answer_probe();
+    p.settle();
+    let out = String::from_utf8_lossy(&p.out.lock().unwrap()).to_string();
+    assert!(!out.contains("KITTY-ARG"), "must not launch kitty: {out}");
+    assert!(p.child.try_wait().unwrap().is_none(), "glyph keeps running in place");
+    assert!(out.contains("\x1b_G"), "draws with kitty graphics here");
+    p.send(b"\x11");
+}
+
+#[test]
+fn kitty_flag_launches_kitty_from_a_plain_terminal() {
+    // a terminal that answers the probe without graphics support
+    let (dir, path) = fake_kitty("kittylaunch");
+    let mut p = spawn_env(&["--kitty", "note.md"], &dir, 80, 24, &[("PATH", &path), ("TERM", "xterm-256color")]);
+    assert!(p.wait_for(b"\x1b[c", Duration::from_secs(5)), "probe never sent");
+    p.send(b"\x1b[?62;c");
+    assert!(p.wait_for(b"KITTY-ARG note.md", Duration::from_secs(5)), "kitty not launched");
+    let out = String::from_utf8_lossy(&p.out.lock().unwrap()).to_string();
+    assert!(out.contains("modify_font=cell_height 125%"), "{out}");
+    assert!(out.contains("window_padding_width=20"));
+    assert!(!out.contains("KITTY-ARG --kitty"), "re-runs glyph with the user's args minus --kitty");
+    assert!(out.contains("\x1b[?1049l"), "restores the terminal before handing over");
 }
