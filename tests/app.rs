@@ -696,3 +696,78 @@ fn save_untitled_asks_for_a_name() {
     h.keys("enter");
     assert_eq!(h.file("Fresh.md"), "fresh text");
 }
+
+fn typeset_harness(w: usize, h: usize, files: &[(&str, &str)]) -> Harness {
+    let cfg = Config { autosave: false, inline_title: false, typography: "proportional".into(), ..Config::default() };
+    Harness::with_caps(w, h, files, kitty_caps(), cfg)
+}
+
+#[test]
+fn typeset_prose_is_drawn_as_images_and_editable() {
+    let mut h = typeset_harness(80, 20, &[("a.md", "Hello **world**, this is prose.\nsecond line")]);
+    let s = h.frame();
+    assert!(!s.contains("Hello"), "prose is not cell text: {s}");
+    assert!(h.vt.placeholder_cells().len() > 30);
+    // the caret is drawn in the image; the hardware cursor stays hidden
+    h.keys("end");
+    assert!(!h.vt.cursor_visible);
+    h.type_text("!");
+    assert_eq!(h.text(), "Hello **world**, this is prose.!\nsecond line");
+    // clicking at the far left of the first image row puts the cursor at col 0
+    let (x0, y0) = {
+        let p = h.vt.placeholder_cells();
+        let min_y = p.iter().map(|c| c.4).min().unwrap();
+        (p.iter().filter(|c| c.4 == min_y).map(|c| c.3).min().unwrap(), min_y)
+    };
+    // pixel-precise click (SGR-Pixels) on the left edge of "H" → col 0; on
+    // the right part of "H" → col 1
+    h.click_px(x0 as u32 * 10 + 2, y0 as u32 * 20 + 10);
+    assert_eq!(h.app.tabs[0].ed.cursor, glyph::buffer::Pos::new(0, 0));
+    h.keys("down"); // (so the next click isn't a double-click)
+    h.click_px(x0 as u32 * 10 + 30, y0 as u32 * 20 + 10);
+    h.click_px(x0 as u32 * 10 + 8, y0 as u32 * 20 + 10);
+    assert_eq!(h.app.tabs[0].ed.cursor, glyph::buffer::Pos::new(0, 1));
+    // a click further right lands somewhere inside the line, on a char boundary
+    h.click(x0 + 12, y0, 0);
+    let c = h.app.tabs[0].ed.cursor;
+    assert_eq!(c.line, 0);
+    assert!(c.col > 3 && c.col < 32, "{c:?}");
+}
+
+#[test]
+fn typeset_vertical_motion_walks_wrapped_lines() {
+    let para = "word ".repeat(60);
+    let mut h = typeset_harness(60, 30, &[("a.md", &format!("{}\nnext", para.trim_end()))]);
+    h.keys("ctrl+home");
+    h.keys("down");
+    let c = h.app.tabs[0].ed.cursor;
+    assert_eq!(c.line, 0, "down moves to the next visual line of the same paragraph");
+    assert!(c.col > 20, "{c:?}");
+    for _ in 0..10 {
+        h.keys("down");
+    }
+    assert_eq!(h.app.tabs[0].ed.cursor.line, 1);
+    h.keys("up");
+    assert_eq!(h.app.tabs[0].ed.cursor.line, 0);
+}
+
+#[test]
+fn typeset_falls_back_for_uncovered_scripts() {
+    let mut h = typeset_harness(80, 20, &[("a.md", "日本語のテキスト\nLatin prose here")]);
+    let s = h.frame();
+    assert!(s.contains("日本語のテキスト"), "CJK stays terminal text: {s}");
+    assert!(!s.contains("Latin prose"), "Latin prose is typeset");
+}
+
+#[test]
+fn typeset_selection_and_search_render_without_cell_text() {
+    let mut h = typeset_harness(80, 20, &[("a.md", "find the needle here\nanother needle")]);
+    h.keys("ctrl+f");
+    h.type_text("needle");
+    h.frame();
+    // (the count is drawn as proportional text; check the state instead)
+    assert_eq!(h.app.find_hits().len(), 2);
+    assert!(h.vt.placeholder_cells().len() > 20);
+    h.keys("escape ctrl+a");
+    assert_eq!(h.app.tabs[0].ed.selected_text().as_deref(), Some("find the needle here\nanother needle"));
+}

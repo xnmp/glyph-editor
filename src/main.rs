@@ -16,6 +16,8 @@ USAGE:
     With files, the vault is the nearest ancestor with .obsidian/ or .git/.
 
 OPTIONS:
+    --kitty             open in a new kitty window tuned for writing (line
+                        spacing, padding, a prose-friendly font if installed)
     --theme NAME        terminal (default), dark, light, nord, gruvbox
     --typography MODE   proportional | terminal | auto (default: proportional
                         Inter text via kitty graphics when supported)
@@ -33,13 +35,16 @@ OPTIONS:
 KEYS: Ctrl+P command palette · Ctrl+O open note · Ctrl+S save · Ctrl+Q quit · F1 help
 
 CONFIG: ~/.config/glyph/config with `key = value` lines
-        (theme, autosave, readable_width, headings, images, remote_images, line_numbers)
+        (theme, autosave, readable_width, headings, images, remote_images, line_numbers,
+         typography, prose_size, line_height, inline_title,
+         kitty_font, kitty_cell_height, kitty_padding)
 ";
 
 fn main() {
     let mut config = Config::load();
     let mut paths: Vec<PathBuf> = vec![];
     let mut mode = Mode::Live;
+    let mut kitty = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -56,6 +61,7 @@ fn main() {
                 let v = args.next().unwrap_or_default();
                 config.set("headings", &v);
             }
+            "--kitty" => kitty = true,
             "--typography" => config.typography = args.next().unwrap_or_else(|| "auto".into()),
             "--terminal-text" => config.typography = "terminal".into(),
             "--no-images" => config.images = false,
@@ -72,10 +78,55 @@ fn main() {
             _ => paths.push(PathBuf::from(a)),
         }
     }
+    if kitty {
+        // re-run ourselves inside a kitty window tuned for writing
+        let err = launch_kitty(&config);
+        eprintln!("glyph: could not start kitty: {err}");
+        std::process::exit(1);
+    }
     if let Err(e) = run(paths, config, mode) {
         eprintln!("glyph: {e}");
         std::process::exit(1);
     }
+}
+
+/// Monospace fonts that read well for prose, best first (used for the cells
+/// that stay text: code, sidebars, inputs).
+const WRITING_FONTS: &[&str] = &["iA Writer Duo S", "iA Writer Duo V", "iA Writer Mono S", "iA Writer Mono V", "IBM Plex Mono", "JetBrains Mono", "Iosevka"];
+
+fn installed_font(families: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("fc-list").args([":", "family"]).output().ok()?;
+    let list = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    families.iter().find(|f| list.lines().any(|l| l.split(',').any(|x| x.trim() == f.to_lowercase()))).map(|s| s.to_string())
+}
+
+/// The kitty arguments for a writing-tuned window running `glyph rest...`.
+pub fn kitty_args(config: &Config, exe: &str, rest: &[String], font: Option<String>) -> Vec<String> {
+    let mut a = vec!["--title".to_string(), "glyph".into(), "--class".into(), "glyph".into()];
+    let mut opt = |k: &str, v: String| {
+        a.push("-o".into());
+        a.push(format!("{k}={v}"));
+    };
+    opt("window_padding_width", config.kitty_padding.to_string());
+    opt("modify_font", format!("cell_height {}", config.kitty_cell_height));
+    if let Some(f) = font {
+        opt("font_family", f);
+    }
+    a.push(exe.to_string());
+    a.extend(rest.iter().filter(|r| *r != "--kitty").cloned());
+    a
+}
+
+fn launch_kitty(config: &Config) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "glyph".into());
+    let rest: Vec<String> = std::env::args().skip(1).collect();
+    let font = match config.kitty_font.as_str() {
+        "auto" => installed_font(WRITING_FONTS),
+        "" | "none" | "default" => None,
+        f => Some(f.to_string()),
+    };
+    std::process::Command::new("kitty").args(kitty_args(config, &exe, &rest, font)).exec()
 }
 
 fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
@@ -89,6 +140,9 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
     if caps.cell_w == 0 {
         caps.cell_w = 10;
         caps.cell_h = 20;
+    }
+    if caps.pixel_mouse {
+        term.enable_pixel_mouse();
     }
     let (w, h, _, _) = term.size();
     let mut app = App::new(caps, w, h, &root, config, term.waker());

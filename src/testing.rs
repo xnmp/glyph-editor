@@ -23,7 +23,17 @@ pub fn kitty_caps() -> Caps {
     for (i, c) in ansi.iter().enumerate() {
         p.ansi[i] = Some(*c);
     }
-    Caps { graphics: true, placeholders: true, text_sizing: true, kitty_keyboard: true, cell_w: 10, cell_h: 20, name: "kitty(0.43.1)".into(), palette: p }
+    Caps {
+        graphics: true,
+        placeholders: true,
+        text_sizing: true,
+        kitty_keyboard: true,
+        pixel_mouse: false,
+        cell_w: 10,
+        cell_h: 20,
+        name: "kitty(0.43.1)".into(),
+        palette: p,
+    }
 }
 
 /// Parse "ctrl+shift+left" style names into a Key.
@@ -123,6 +133,17 @@ impl Harness {
     pub fn click(&mut self, x: usize, y: usize, mods: u8) -> String {
         self.app.handle(Event::Mouse(Mouse { kind: MouseKind::Press, button: 0, x: x as u16, y: y as u16, mods }));
         self.app.handle(Event::Mouse(Mouse { kind: MouseKind::Release, button: 0, x: x as u16, y: y as u16, mods }));
+        self.frame()
+    }
+
+    /// Click at an exact pixel (SGR-Pixels mouse reporting).
+    pub fn click_px(&mut self, px: u32, py: u32) -> String {
+        let pm = self.app.caps.pixel_mouse;
+        self.app.caps.pixel_mouse = true;
+        for kind in [MouseKind::Press, MouseKind::Release] {
+            self.app.handle(Event::Mouse(Mouse { kind, button: 0, x: px as u16, y: py as u16, mods: 0 }));
+        }
+        self.app.caps.pixel_mouse = pm;
         self.frame()
     }
 

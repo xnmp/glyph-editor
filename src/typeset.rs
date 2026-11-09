@@ -94,6 +94,8 @@ pub struct Piece {
     pub bg: Option<(u8, u8, u8)>,
     pub underline: Option<(u8, u8, u8)>,
     pub strike: bool,
+    /// advance to this absolute x (px) before the text: a tab stop
+    pub tab: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -112,6 +114,7 @@ pub struct Params {
 struct G {
     x: f32,
     w: f32,
+    tab: Option<f32>,
     text: String,
     a: usize,
     b: usize,
@@ -225,27 +228,42 @@ pub fn layout(pieces: Vec<Piece>, p: &Params) -> Typeset {
     let mut gs: Vec<G> = vec![];
     for (pi, pc) in pieces.iter().enumerate() {
         let px = p.font_px * pc.scale;
+        if pc.tab.is_some() {
+            gs.push(G { x: 0.0, w: 0.0, tab: pc.tab, text: String::new(), a: pc.a, b: pc.a, piece: pi, space: false });
+        }
         if pc.text.is_empty() {
-            gs.push(G { x: 0.0, w: 0.0, text: String::new(), a: pc.a, b: pc.b, piece: pi, space: false });
+            gs.push(G { x: 0.0, w: 0.0, tab: pc.tab, text: String::new(), a: pc.a, b: pc.b, piece: pi, space: false });
             continue;
         }
         if pc.src {
             let mut k = pc.a;
             for g in pc.text.graphemes(true) {
                 let t = if g == "\t" { "    " } else { g };
-                gs.push(G { x: 0.0, w: advance(fonts, pc.face, px, t), text: t.to_string(), a: k, b: k + g.len(), piece: pi, space: g == " " || g == "\t" });
+                gs.push(G {
+                    x: 0.0,
+                    w: advance(fonts, pc.face, px, t),
+                    tab: None,
+                    text: t.to_string(),
+                    a: k,
+                    b: k + g.len(),
+                    piece: pi,
+                    space: g == " " || g == "\t",
+                });
                 k += g.len();
             }
         } else {
             // a replacement (bullet, math, arrow…) is one unit for the caret
-            gs.push(G { x: 0.0, w: advance(fonts, pc.face, px, &pc.text), text: pc.text.clone(), a: pc.a, b: pc.b, piece: pi, space: false });
+            gs.push(G { x: 0.0, w: advance(fonts, pc.face, px, &pc.text), tab: None, text: pc.text.clone(), a: pc.a, b: pc.b, piece: pi, space: false });
         }
     }
     // greedy line breaking at spaces
     let mut lines_g: Vec<Vec<G>> = vec![vec![]];
     let mut x = 0.0f32;
     let mut last_space: Option<usize> = None;
-    for g in gs {
+    for mut g in gs {
+        if let Some(t) = g.tab {
+            g.w = (t - x).max(0.0);
+        }
         let cur = lines_g.last_mut().unwrap();
         if x + g.w > p.width_px && !cur.is_empty() && g.w > 0.0 {
             if g.space {
@@ -464,7 +482,9 @@ impl Typeset {
         let fonts = Fonts::get();
         let rows = self.map.rows as u32;
         let (cw, ch) = (self.map.cell_w, self.map.cell_h);
-        let w = ((self.width / cw as f32).ceil() as u32).max(1) * cw;
+        // only as wide as the text (plus room for a caret at the end)
+        let used = self.lines.iter().map(|l| l.glyphs.last().map_or(0.0, |g| g.x + g.w)).fold(0.0f32, f32::max) + 4.0;
+        let w = ((used.min(self.width.max(1.0)) / cw as f32).ceil() as u32).max(1) * cw;
         let mut img = RgbaImage::from_pixel(w, rows * ch, Rgba([0, 0, 0, 0]));
         // selection and search hits behind the text
         for &(a, b) in &marks.selection {
@@ -558,6 +578,19 @@ mod tests {
             bg: None,
             underline: None,
             strike: false,
+            tab: None,
+        }
+    }
+
+    #[test]
+    fn tab_stops_align_columns() {
+        let p = Params { width_px: 400.0, font_px: 16.0, line_height: 1.5, pad_top: 0.0, cell_w: 10, cell_h: 20 };
+        for key in ["a", "longer key"] {
+            let mut v = piece("value", key.len());
+            v.tab = Some(120.0);
+            let t = layout(vec![piece(key, 0), v], &p);
+            let x = t.map.x_of(0, key.len());
+            assert!((x - 120.0).abs() < 0.5, "value starts at the tab stop for key {key:?}: {x}");
         }
     }
 

@@ -519,7 +519,8 @@ impl View {
     }
 
     /// Source position for a click at absolute (x, y); None when outside text.
-    pub fn hit(&self, x: usize, y: usize, ed: &Editor) -> Option<Pos> {
+    /// `px`: the exact pointer position in pixels, when the terminal reports it.
+    pub fn hit(&self, x: usize, y: usize, ed: &Editor, px: Option<(u32, u32)>) -> Option<Pos> {
         if self.hits.is_empty() {
             return None;
         }
@@ -550,10 +551,11 @@ impl View {
         if let Some(m) = &h.row().tmap {
             // exact: the visual line under the pointer, then the nearest caret stop
             let (img_x, trow) = (h.row().image.as_ref().map_or(0, |i| i.2 as usize), h.row().trow as usize);
-            let py = (trow + y.saturating_sub(h.y)) as f32 * m.cell_h as f32 + m.cell_h as f32 / 2.0;
+            let (sub_x, sub_y) = px.map_or((m.cell_w as f32 / 2.0, m.cell_h as f32 / 2.0), |(pxx, pyy)| ((pxx % m.cell_w) as f32, (pyy % m.cell_h) as f32));
+            let py = (trow + y.saturating_sub(h.y)) as f32 * m.cell_h as f32 + sub_y;
             let li = m.line_at_y(py);
-            let px = (x.saturating_sub(self.cx0 + img_x)) as f32 * m.cell_w as f32 + m.cell_w as f32 / 2.0;
-            return Some(Pos::new(h.line, m.col_at(li, px)));
+            let gx = (x.saturating_sub(self.cx0 + img_x)) as f32 * m.cell_w as f32 + sub_x;
+            return Some(Pos::new(h.line, m.col_at(li, gx)));
         }
         if row.kind == RowKind::Image {
             return Some(Pos::new(h.line, 0));

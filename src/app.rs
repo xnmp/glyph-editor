@@ -128,6 +128,22 @@ pub struct Completion {
     pub sel: usize,
 }
 
+/// A snapshot of the find bar for drawing.
+pub struct FindView {
+    pub query: LineInput,
+    pub replace: LineInput,
+    pub replacing: bool,
+    pub field: u8,
+    pub case: bool,
+}
+
+/// A snapshot of the completion popup for drawing.
+pub struct CompletionView {
+    pub items: Vec<String>,
+    pub sel: usize,
+    pub query: String,
+}
+
 pub struct Config {
     pub theme: String,
     pub autosave: bool,
@@ -142,6 +158,10 @@ pub struct Config {
     /// prose font size as a fraction of the cell height, and line height
     pub prose_size: f32,
     pub line_height: f32,
+    /// `glyph --kitty`: window settings for a writing-tuned kitty window
+    pub kitty_font: String,
+    pub kitty_cell_height: String,
+    pub kitty_padding: u32,
 }
 
 impl Default for Config {
@@ -158,6 +178,9 @@ impl Default for Config {
             typography: "auto".into(),
             prose_size: 0.8,
             line_height: 1.5,
+            kitty_font: "auto".into(),
+            kitty_cell_height: "125%".into(),
+            kitty_padding: 20,
         }
     }
 }
@@ -201,6 +224,9 @@ impl Config {
             "line_numbers" | "line-numbers" => self.line_numbers = b,
             "inline_title" | "inline-title" => self.inline_title = b,
             "typography" => self.typography = v.to_string(),
+            "kitty_font" | "kitty-font" => self.kitty_font = v.to_string(),
+            "kitty_cell_height" | "kitty-cell-height" => self.kitty_cell_height = v.to_string(),
+            "kitty_padding" | "kitty-padding" => self.kitty_padding = v.parse().unwrap_or(20),
             "prose_size" | "prose-size" => self.prose_size = v.parse().unwrap_or(0.8),
             "line_height" | "line-height" => self.line_height = v.parse().unwrap_or(1.5),
             _ => {}
@@ -258,6 +284,10 @@ pub struct App {
     pub embed_gen: u64,
     pub scroll_seen: ((usize, usize, usize), Option<Instant>),
     hits_cache: Option<((u64, String, bool, usize), std::rc::Rc<Vec<(Pos, Pos)>>)>,
+    /// pointer position in pixels for the current mouse event (pixel mode)
+    pub mouse_px: Option<(u32, u32)>,
+    /// rendered UI labels (proportional chrome), keyed by content
+    pub labels: std::collections::HashMap<u64, (std::sync::Arc<crate::images::Img>, usize)>,
     pub open_url: Box<dyn Fn(&str)>,
     pub system_paste: Box<dyn Fn() -> Option<String>>,
 }
@@ -331,6 +361,8 @@ impl App {
             embed_gen: 0,
             scroll_seen: ((0, 0, 0), None),
             hits_cache: None,
+            mouse_px: None,
+            labels: Default::default(),
             open_url: Box::new(open_external),
             system_paste: Box::new(system_paste),
         }
@@ -2027,6 +2059,14 @@ impl App {
 
     // ------------------------------------------------------------------ mouse
     pub fn mouse(&mut self, m: Mouse) {
+        // with SGR-Pixels reporting, keep the exact pixel and work in cells
+        let (m, px) = if self.caps.pixel_mouse {
+            let (cw, ch) = (self.images.cell_w.max(1), self.images.cell_h.max(1));
+            (Mouse { x: (m.x as u32 / cw) as u16, y: (m.y as u32 / ch) as u16, ..m }, Some((m.x as u32, m.y as u32)))
+        } else {
+            (m, None)
+        };
+        self.mouse_px = px;
         let (x, y) = (m.x as usize, m.y as usize);
         if self.overlay.is_some() {
             if m.kind == MouseKind::Press && m.button == 0 {
@@ -2102,7 +2142,7 @@ impl App {
         let read = self.tabs[self.cur].view.mode == Mode::Read;
         let pos = {
             let t = &self.tabs[self.cur];
-            t.view.hit(x, y, &t.ed)
+            t.view.hit(x, y, &t.ed, self.mouse_px)
         };
         match m.kind {
             MouseKind::Press if m.button == 0 => {
@@ -2166,7 +2206,7 @@ impl App {
                 let yy = y.clamp(r.y, r.y + r.h.saturating_sub(1));
                 let p = {
                     let t = &self.tabs[self.cur];
-                    t.view.hit(x, yy, &t.ed)
+                    t.view.hit(x, yy, &t.ed, self.mouse_px)
                 };
                 if let Some(p) = p {
                     if self.ed().anchor.is_none() {

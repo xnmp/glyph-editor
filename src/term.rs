@@ -15,6 +15,8 @@ pub struct Caps {
     pub placeholders: bool,
     pub text_sizing: bool,
     pub kitty_keyboard: bool,
+    /// SGR-Pixels mouse reporting (mode 1016): exact pointer positions
+    pub pixel_mouse: bool,
     pub cell_w: u32,
     pub cell_h: u32,
     pub name: String,
@@ -49,7 +51,7 @@ const ENTER: &str = "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?100
 fn leave_seq() -> String {
     let mut s = String::new();
     gfx::delete_all(&mut s);
-    s.push_str("\x1b[<u\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[0 q\x1b[?25h\x1b[?7h\x1b[?1049l");
+    s.push_str("\x1b[<u\x1b[?1016l\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[0 q\x1b[?25h\x1b[?7h\x1b[?1049l");
     s
 }
 
@@ -138,6 +140,12 @@ impl Terminal {
         }
     }
 
+    /// Report mouse positions in pixels (when supported) for precise
+    /// placement inside proportional text.
+    pub fn enable_pixel_mouse(&mut self) {
+        self.write("\x1b[?1016h");
+    }
+
     pub fn suspend(&mut self) {
         self.leave();
         unsafe {
@@ -211,6 +219,7 @@ impl Terminal {
         for i in 0..8 {
             q.push_str(&format!("\x1b]4;{i};?\x1b\\"));
         }
+        q.push_str("\x1b[?1016$p"); // DECRQM: SGR-Pixels mouse?
         q.push_str("\x1b[c");
         self.parser.expect_cpr = true;
         self.write(&q);
@@ -242,6 +251,8 @@ impl Terminal {
                         Reply::Cpr(r, c) => cprs.push((r, c)),
                         Reply::Osc(s) => parse_color_reply(&s, &mut caps.palette),
                         Reply::Da1 => got_da1 = true,
+                        Reply::Mode(1016, v) => caps.pixel_mouse = v == 1 || v == 2,
+                        Reply::Mode(..) => {}
                         Reply::Focus(_) => {}
                     },
                     e => other.push(e),

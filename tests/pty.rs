@@ -107,6 +107,7 @@ impl Pty {
             "\x1b]10;rgb:dada/dada/dada\x1b\\",
             "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\",
             "\x1b]4;5;rgb:8a8a/5c5c/f5f5\x1b\\",
+            "\x1b[?1016;2$y",
             "\x1b[?62;c",
         );
         self.send(reply.as_bytes());
@@ -134,6 +135,7 @@ fn real_binary_end_to_end() {
     let out = String::from_utf8_lossy(&p.out.lock().unwrap()).to_string();
     assert!(out.contains("\x1b[?1049h"), "alternate screen");
     assert!(out.contains("\x1b[>1u"), "kitty keyboard protocol requested");
+    assert!(out.contains("\x1b[?1016h"), "pixel mouse enabled after DECRQM says it is supported");
 
     // type (legacy + kitty-encoded keys), save with ctrl+s, quit with ctrl+q
     p.send(b"\x1b[B\x1b[B");
@@ -212,4 +214,22 @@ fn real_binary_typesets_prose_with_kitty_graphics() {
         assert!(t.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn kitty_launcher_passes_writing_options() {
+    // a stand-in `kitty` that prints its arguments
+    let dir = tmpdir("kittylaunch");
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("kitty");
+    std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let o = Command::new(env!("CARGO_BIN_EXE_glyph")).args(["--kitty", "note.md"]).env("PATH", path).env("HOME", &dir).output().unwrap();
+    let args = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(args.contains("modify_font=cell_height 125%"), "{args}");
+    assert!(args.contains("window_padding_width=20"));
+    assert!(args.lines().last() == Some("note.md") && !args.contains("--kitty"), "re-runs glyph with the user's args: {args}");
 }

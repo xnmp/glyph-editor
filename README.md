@@ -17,6 +17,14 @@ It's one native Rust binary with micro-style keys, mouse support and no modes.
   `s/w/n/d`), and you can edit them in place with kitty's full-height cursor. Other
   graphics-capable terminals get headings drawn with a proportional font. Everywhere else they
   fall back to styled text.
+- **Proportional text, like Obsidian.** On kitty-graphics terminals, prose, headings, the
+  file explorer, palette and status bar are typeset in Inter (embedded in the binary) and
+  placed as images, with the caret, selection and search hits drawn in. Clicks land on the
+  exact glyph via pixel-precise mouse reporting (SGR-Pixels, `?1016`). Code blocks and tables
+  stay monospace on purpose. `--typography terminal` uses your terminal font everywhere.
+- **`glyph --kitty`** opens a new kitty window tuned for writing: 125% line height, 20px
+  padding, and a writing font if one is installed (iA Writer Duo/Mono, IBM Plex Mono, JetBrains
+  Mono, Iosevka).
 - **Looks like Obsidian:**
   - an inline title (the note name, large, above the text)
   - callouts as rounded tinted boxes with the actual Lucide icons Obsidian uses
@@ -76,8 +84,9 @@ It's one native Rust binary with micro-style keys, mouse support and no modes.
 cargo install --path .      # or: cargo build --release && cp target/release/glyph ~/.local/bin/
 ```
 
-Requires Rust 1.85+ (edition 2024). For heading images, glyph looks for Inter, DejaVu Sans or
-Liberation Sans. Use `GLYPH_HEADING_FONT=/path/to/font.ttf` to pick a different font.
+Requires Rust 1.85+ (edition 2024). Fonts are embedded (Inter for prose, DejaVu Sans as a
+glyph fallback), so there is nothing else to install. `GLYPH_HEADING_FONT=/path/to/font.ttf`
+overrides the font used for heading images.
 
 ## Usage
 
@@ -85,11 +94,14 @@ Liberation Sans. Use `GLYPH_HEADING_FONT=/path/to/font.ttf` to pick a different 
 glyph notes.md          # open a file (vault = nearest folder with .obsidian/ or .git/)
 glyph ~/Notes           # open a vault: shows README/index or the quick switcher
 glyph --read doc.md     # reading view
+glyph --kitty notes.md  # new kitty window with writing-friendly spacing and font
 ```
 
 Options:
 
 - `--theme terminal|dark|light|nord|gruvbox`
+- `--typography proportional|terminal|auto`
+- `--kitty`: launch in a writing-tuned kitty window
 - `--headings osc66|image|plain`
 - `--no-images`, `--no-remote-images`, `--no-autosave`
 - `--source`, `--read`, `--line-numbers`
@@ -105,16 +117,23 @@ headings = auto        # osc66 | image | plain
 images = true
 remote_images = true
 line_numbers = false
+inline_title = true
+typography = auto      # proportional | terminal
+prose_size = 0.8       # proportional text size, relative to the cell height
+line_height = 1.5      # proportional line pitch, in rows of text
+kitty_font = auto      # font for --kitty (auto = first installed writing font)
+kitty_cell_height = 125%
+kitty_padding = 20
 ```
 
 ### Terminal support
 
-| Terminal | Big headings | Images | Notes |
-|---|---|---|---|
-| kitty ≥ 0.40 | OSC 66 (editable in place) | Unicode placeholders | full experience |
-| Ghostty | font-rendered images | Unicode placeholders | |
-| WezTerm, Konsole, other kitty-graphics terminals | font-rendered images | cropped placements | |
-| anything else | bold + rule | alt text | everything else works |
+| Terminal | Big headings | Proportional text | Images | Notes |
+|---|---|---|---|---|
+| kitty ≥ 0.40 | OSC 66 / typeset | yes | Unicode placeholders | full experience |
+| Ghostty | typeset | yes | Unicode placeholders | |
+| WezTerm, Konsole, other kitty-graphics terminals | typeset | yes | cropped placements | |
+| anything else | bold + rule | terminal font | alt text | everything else works |
 
 glyph detects capabilities at startup by querying the terminal, not by guessing from `$TERM`.
 
@@ -240,3 +259,10 @@ Source map:
 | `screen.rs`, `graphics.rs` | diffing renderer; kitty graphics + OSC 66 encoders |
 | `term.rs`, `input.rs` | raw terminal, capability probe, key/mouse/paste decoding |
 | `images.rs`, `highlight.rs`, `vault.rs` | image pipeline, syntax highlighting, note index |
+| `typeset.rs` | proportional typesetting: shaping, wrapping, column ↔ pixel maps, rasterising |
+
+## Licenses
+
+Embedded fonts: Inter (SIL Open Font License 1.1, see
+`assets/fonts/Inter-OFL.txt`) and DejaVu (Bitstream Vera license, see
+`assets/fonts/DejaVu-LICENSE.txt`).

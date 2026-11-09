@@ -68,6 +68,12 @@ pub struct Mouse {
     pub mods: u8,
 }
 
+impl Mouse {
+    pub fn new(kind: MouseKind, button: u8, x: u16, y: u16, mods: u8) -> Mouse {
+        Mouse { kind, button, x, y, mods }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
     Cpr(u16, u16),
@@ -78,6 +84,8 @@ pub enum Reply {
     CellSize(u16, u16),
     Osc(String),
     Focus(bool),
+    /// DECRQM reply: (mode, state) — state 0 = not recognised
+    Mode(u16, u8),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -380,12 +388,17 @@ impl Parser {
             };
             return Some((end, Some(Event::Mouse(Mouse { kind, button: btn, x, y, mods }))));
         }
-        if let Some(_p) = params.strip_prefix('?') {
+        if let Some(p) = params.strip_prefix('?') {
             return Some((
                 end,
                 match f {
                     b'u' => Some(Event::Reply(Reply::KbdFlags)),
                     b'c' => Some(Event::Reply(Reply::Da1)),
+                    b'y' => {
+                        let p = p.trim_end_matches('$');
+                        let mut it = p.split(';').map(|x| x.parse::<u16>().unwrap_or(0));
+                        Some(Event::Reply(Reply::Mode(it.next().unwrap_or(0), it.next().unwrap_or(0) as u8)))
+                    }
                     _ => None,
                 },
             ));

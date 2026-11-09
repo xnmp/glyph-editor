@@ -187,18 +187,20 @@ pub struct Atom {
     pub space: bool,
     pub tab: bool,
     pub icon: Option<crate::images::IconRef>,
+    /// typeset: start this atom at x = tab_to px (column alignment)
+    pub tab_to: Option<f32>,
 }
 
 impl Atom {
     fn src(a: usize, b: usize, w: u16, style: Style, space: bool) -> Atom {
-        Atom { a, b, w, style, repl: None, hidden: false, space, tab: false, icon: None }
+        Atom { a, b, w, style, repl: None, hidden: false, space, tab: false, icon: None, tab_to: None }
     }
     fn repl(a: usize, b: usize, text: String, style: Style) -> Atom {
         let w = str_width(&text) as u16;
-        Atom { a, b, w, style, repl: Some(text), hidden: false, space: false, tab: false, icon: None }
+        Atom { a, b, w, style, repl: Some(text), hidden: false, space: false, tab: false, icon: None, tab_to: None }
     }
     fn hidden(a: usize, b: usize) -> Atom {
-        Atom { a, b, w: 0, style: Style::new(), repl: None, hidden: true, space: false, tab: false, icon: None }
+        Atom { a, b, w: 0, style: Style::new(), repl: None, hidden: true, space: false, tab: false, icon: None, tab_to: None }
     }
 }
 
@@ -765,7 +767,7 @@ impl Layout {
                     }
                 }
             }
-            pieces.push(Piece { text: txt, a: at.a, b: at.b, src, face, scale: pscale, fg, bg, underline, strike });
+            pieces.push(Piece { text: txt, a: at.a, b: at.b, src, face, scale: pscale, fg, bg, underline, strike, tab: at.tab_to });
         }
         let width_cells = ctx.width.saturating_sub(x).max(4);
         let pad_top = if heading.is_some() { (t.font_px * scale * 0.35).round() } else { 0.0 };
@@ -1996,6 +1998,13 @@ impl Layout {
         }
         let mut r = VRow::new(0, text.len());
         r.fill = fill;
+        if i == b.start
+            && ctx.typo.is_some()
+            && let Some(rows) =
+                self.typeset_rows(ctx, i, text, &[Atom::repl(0, text.len(), "Properties".into(), Style::fg(th.muted).bold())], vec![], &[], 0, None, fill)
+        {
+            return rows;
+        }
         if i == b.start {
             let lab = "Properties";
             r.segs.push(Seg {
@@ -2073,6 +2082,21 @@ impl Layout {
             } else {
                 self.inline_atoms(ctx, text, va, text.len(), Style::new(), None, false).0
             };
+            if let Some(t) = ctx.typo {
+                // proportional: key, then the value at a tab stop (aligned column)
+                let mut ta = vec![Atom::repl(0, va, key.to_string(), Style::fg(th.muted))];
+                let mut first = true;
+                for mut at in atoms.iter().cloned() {
+                    if first && !at.hidden {
+                        at.tab_to = Some((kw as f32 * t.cell_w as f32 * 0.85).round());
+                        first = false;
+                    }
+                    ta.push(at);
+                }
+                if let Some(rows) = self.typeset_rows(ctx, i, text, &ta, vec![], &[], 0, None, fill) {
+                    return rows;
+                }
+            }
             return self.rows_from(ctx, text, &atoms, prefix, &[], 0, text.len(), Some(kw), Some(kw), 1, fill, false, w);
         }
         let atoms = self.raw_atoms(text, 0, text.len(), Style::fg(th.muted));

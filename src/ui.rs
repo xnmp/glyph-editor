@@ -6,10 +6,166 @@ use crate::commands;
 use crate::layout::{HeadingMode, Mode};
 use crate::screen::Canvas;
 use crate::style::{Color, Style};
-use crate::text::{pad_to, str_width, truncate};
+use crate::text::{str_width, truncate};
 use crate::view::Rect;
 
 impl App {
+    /// Proportional (Inter) chrome: on when prose is typeset and placeholders work.
+    pub fn ui_prop(&self) -> bool {
+        self.typeset_on() && self.screen.placeholders
+    }
+
+    fn ui_face(st: Style) -> crate::typeset::Face {
+        use crate::typeset::Face;
+        match (st.has(crate::style::BOLD), st.has(crate::style::ITALIC)) {
+            (true, true) => Face::BoldItalic,
+            (true, false) => Face::SemiBold,
+            (false, true) => Face::Italic,
+            _ => Face::Regular,
+        }
+    }
+
+    /// A cached one-row image of styled runs in Inter: (image, width in cells).
+    fn label_img(&mut self, runs: &[(String, Style)], max_w: usize, caret: Option<usize>) -> Option<(std::sync::Arc<crate::images::Img>, usize)> {
+        use crate::typeset::{Fonts, Params, Piece};
+        use std::hash::{Hash, Hasher};
+        let (cw, ch) = (self.images.cell_w, self.images.cell_h);
+        let deffg = self.theme.fg.rgb().or(self.caps.palette.fg).unwrap_or((220, 220, 220));
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (max_w, cw, ch, deffg, caret).hash(&mut h);
+        for (t, st) in runs {
+            (t, st).hash(&mut h);
+        }
+        let key = h.finish();
+        if let Some(v) = self.labels.get(&key) {
+            return Some(v.clone());
+        }
+        let fonts = Fonts::get();
+        let font_px = ch as f32 * 0.7;
+        let params = Params { width_px: 1.0e6, font_px, line_height: ch as f32 / font_px, pad_top: 0.0, cell_w: cw, cell_h: ch };
+        let mut pieces = vec![];
+        let mut pos = 0;
+        for (t, st) in runs {
+            let face = Self::ui_face(*st);
+            if !fonts.covers(face, t) {
+                return None;
+            }
+            let fg = st.fg.rgb().unwrap_or(deffg);
+            pieces.push(Piece {
+                text: t.clone(),
+                a: pos,
+                b: pos + t.len(),
+                src: true,
+                face,
+                scale: 1.0,
+                fg,
+                bg: None,
+                underline: (st.underline != 0).then_some(fg),
+                strike: st.has(crate::style::STRIKE),
+                tab: None,
+            });
+            pos += t.len();
+        }
+        let width = |t: &crate::typeset::Typeset| t.map.lines.first().and_then(|l| l.stops.last()).map_or(0.0, |s| s.1);
+        let limit = (max_w * cw as usize) as f32;
+        let mut ts = crate::typeset::layout(pieces.clone(), &params);
+        if max_w > 0 && width(&ts) > limit {
+            // ellipsize: drop characters from the end until it fits
+            while let Some(last) = pieces.last_mut() {
+                if last.text.pop().is_none() || last.text.is_empty() {
+                    pieces.pop();
+                    continue;
+                }
+                let mut p2 = pieces.clone();
+                let l = p2.last_mut().unwrap();
+                l.text.push('…');
+                l.b = l.a + l.text.len();
+                ts = crate::typeset::layout(p2, &params);
+                if width(&ts) <= limit {
+                    break;
+                }
+            }
+        }
+        let caret_col = self.theme.accent.rgb().unwrap_or((140, 100, 240));
+        let im = ts.render(&crate::typeset::Marks { caret, caret_color: caret_col, ..Default::default() });
+        let cols = (((width(&ts) + if caret.is_some() { 3.0 } else { 0.0 }) / cw as f32).ceil() as usize).max(1);
+        let img = self.images.adhoc(&im);
+        if self.labels.len() > 4000 {
+            self.labels.clear();
+        }
+        self.labels.insert(key, (img.clone(), cols));
+        Some((img, cols))
+    }
+
+    /// Draw styled runs as one proportional label (cells when off). Returns x after.
+    pub fn text_runs(&mut self, cv: &mut Canvas, x: i32, y: i32, runs: &[(String, Style)], clip: usize) -> i32 {
+        let all: String = runs.iter().map(|r| r.0.as_str()).collect();
+        if all.trim().is_empty() || !self.ui_prop() || x < 0 || y < 0 || y as usize >= cv.h {
+            let mut x = x;
+            for (t, st) in runs {
+                x = cv.put(x, y, t, *st, clip);
+            }
+            return x;
+        }
+        let max_w = clip.min(cv.w).saturating_sub(x as usize);
+        let Some((img, cols)) = self.label_img(runs, max_w, None) else {
+            let mut x = x;
+            for (t, st) in runs {
+                x = cv.put(x, y, t, *st, clip);
+            }
+            return x;
+        };
+        let data = img.data.clone();
+        if !cv.images.iter().any(|d| d.id == data.id) {
+            cv.images.push(data.clone());
+        }
+        let (r, g, b) = crate::graphics::id_color(data.id);
+        let cells: String = (0..cols.min(data.cols as usize)).map(|c| crate::graphics::placeholder_cell(0, c)).collect();
+        let bg = runs.first().map_or(Color::Default, |r| r.1.bg);
+        cv.put(x, y, &cells, Style { fg: Color::Rgb(r, g, b), bg, ..Style::new() }, clip);
+        x + cols as i32
+    }
+
+    /// Draw UI text: Inter as an image when typeset mode is on, cells otherwise.
+    /// Drop-in for `cv.put` (returns the x after the text).
+    pub fn text(&mut self, cv: &mut Canvas, x: i32, y: i32, s: &str, st: Style, clip: usize) -> i32 {
+        self.text_runs(cv, x, y, &[(s.to_string(), st)], clip)
+    }
+
+    /// An editable single-line field: proportional text with the caret drawn
+    /// in (typeset mode), or cells with the hardware cursor.
+    pub fn text_input(&mut self, cv: &mut Canvas, x: usize, y: usize, text: &str, cur: usize, st: Style, clip: usize) {
+        let max_w = clip.min(cv.w).saturating_sub(x);
+        if self.ui_prop() && !text.is_empty() {
+            if let Some((img, cols)) = self.label_img(&[(text.to_string(), st)], max_w, Some(cur)) {
+                let data = img.data.clone();
+                if !cv.images.iter().any(|d| d.id == data.id) {
+                    cv.images.push(data.clone());
+                }
+                let (r, g, b) = crate::graphics::id_color(data.id);
+                let cells: String = (0..cols.min(data.cols as usize)).map(|c| crate::graphics::placeholder_cell(0, c)).collect();
+                cv.put(x as i32, y as i32, &cells, Style { fg: Color::Rgb(r, g, b), bg: st.bg, ..Style::new() }, clip);
+                let before = self.text_w(&text[..cur], st);
+                cv.cursor = Some(((x + before).min(clip.saturating_sub(1)), y));
+                cv.cursor_hidden = true;
+                return;
+            }
+        }
+        cv.put(x as i32, y as i32, &truncate(text, max_w), st, clip);
+        cv.cursor = Some(((x + str_width(&text[..cur])).min(x + max_w), y));
+        cv.cursor_hidden = false;
+    }
+
+    /// Width in cells that `text()` will use.
+    pub fn text_w(&mut self, s: &str, st: Style) -> usize {
+        if self.ui_prop() && !s.trim().is_empty() {
+            if let Some((_, c)) = self.label_img(&[(s.to_string(), st)], 1000, None) {
+                return c;
+            }
+        }
+        str_width(s)
+    }
+
     pub fn render(&mut self) -> String {
         if self.tabs.is_empty() {
             self.open_text("");
@@ -80,7 +236,7 @@ impl App {
             cv.put(r.w as i32, y as i32, "│", Style::fg(th.border).with_bg(th.bg), self.w);
         }
         let head = self.vault.root.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        cv.put(r.x as i32 + 2, r.y as i32, &truncate(&head, r.w.saturating_sub(3)), Style::fg(th.fg).with_bg(bg.bg).bold(), r.x + r.w);
+        self.text(cv, r.x as i32 + 2, r.y as i32, &truncate(&head, r.w.saturating_sub(3)), Style::fg(th.fg).with_bg(bg.bg).bold(), r.x + r.w);
         let items = self.tree_items();
         let vis = r.h.saturating_sub(1);
         if self.focus == Focus::Files {
@@ -128,13 +284,7 @@ impl App {
             }
             let x0 = (r.x + 2 + 2 * depth) as i32;
             let x = cv.put(x0, y as i32, icon, Style::fg(th.faint).with_bg(row_bg), r.x + r.w);
-            cv.put(
-                x,
-                y as i32,
-                &truncate(&label, (r.x + r.w).saturating_sub(x as usize + 1)),
-                if focused { st.with_fg(th.accent) } else { st },
-                (r.x + r.w).saturating_sub(1),
-            );
+            self.text(cv, x, y as i32, &label, if focused { st.with_fg(th.accent) } else { st }, (r.x + r.w).saturating_sub(1));
         }
     }
 
@@ -151,8 +301,9 @@ impl App {
         for (i, n) in names.iter().enumerate() {
             let active = i == self.right_tab;
             let st = if active { Style::fg(th.fg).bold().underline(crate::style::UL_SINGLE, th.accent) } else { Style::fg(th.faint) };
-            let x = r.x + i * third + (third.saturating_sub(n.len())) / 2;
-            cv.put(x as i32, r.y as i32, n, st.with_bg(bg.bg), r.x + r.w);
+            let nw = self.text_w(n, st);
+            let x = r.x + i * third + (third.saturating_sub(nw)) / 2;
+            self.text(cv, x as i32, r.y as i32, n, st.with_bg(bg.bg), r.x + r.w);
         }
         let items: Vec<(String, Style, usize)> = match self.right_tab {
             0 => {
@@ -208,7 +359,7 @@ impl App {
                 }
                 cv.fill(r.x, y, r.w, 1, st);
             }
-            cv.put((r.x + 1 + ind) as i32, y as i32, &truncate(t, r.w.saturating_sub(2 + ind)), st, r.x + r.w);
+            self.text(cv, (r.x + 1 + ind) as i32, y as i32, t, st, r.x + r.w - 1);
         }
     }
 
@@ -288,24 +439,37 @@ impl App {
             Mode::Source => parts.push(("Source".into(), Style::fg(th.accent).bold().with_bg(bg.bg))),
             Mode::Live => {}
         }
-        let total: usize = parts.iter().map(|p| str_width(&p.0)).sum::<usize>() + 3 * parts.len().saturating_sub(1) + 2;
+        let gap = if self.ui_prop() { 2 } else { 3 };
+        let mut total = 2 + gap * parts.len().saturating_sub(1);
+        for p in &parts {
+            total += self.text_w(&p.0, p.1);
+        }
         let rx = self.w.saturating_sub(total);
         let mut x = rx as i32 + 1;
         for (k, (t, st)) in parts.iter().enumerate() {
             if k > 0 {
-                x += 3;
+                x += gap as i32;
             }
-            x = cv.put(x, y as i32, t, *st, self.w);
+            x = self.text(cv, x, y as i32, t, *st, self.w);
         }
-        if let Some((m, _, err)) = &self.status {
-            let st = if *err { Style::fg(th.red).bold() } else { Style::fg(th.fg) };
-            cv.put(1, y as i32, &truncate(m, rx.saturating_sub(2)), st.with_bg(bg.bg), rx);
+        if let Some((m, _, err)) = self.status.clone() {
+            let st = if err { Style::fg(th.red).bold() } else { Style::fg(th.fg) };
+            self.text(cv, 1, y as i32, &m, st.with_bg(bg.bg), rx.saturating_sub(1));
         }
     }
 
     fn draw_find(&mut self, cv: &mut Canvas, nmatch: usize, cur_match: Option<usize>) {
         let th = self.theme.clone();
-        let Some(f) = &self.find else { return };
+        let Some(f) = self.find.as_ref().map(|f| crate::app::FindView {
+            query: f.query.clone(),
+            replace: f.replace.clone(),
+            replacing: f.replacing,
+            field: f.field,
+            case: f.case,
+        }) else {
+            return;
+        };
+        let f = &f;
         let rows = if f.replacing { 2 } else { 1 };
         let y0 = self.h.saturating_sub(1 + rows);
         let bg = Style::bg(if th.rgb { th.panel } else { Color::Default });
@@ -322,19 +486,31 @@ impl App {
         let fields: Vec<(&str, &crate::app::LineInput)> =
             if f.replacing { vec![(" Find", &f.query), (" Replace", &f.replace)] } else { vec![(" Find", &f.query)] };
         let mut cur = None;
+        let mut cursor_hidden = false;
+        let fields: Vec<(&str, crate::app::LineInput)> = fields.into_iter().map(|(l, i)| (l, i.clone())).collect();
+        let case_on = f.case;
+        let _ = case_on;
         for (i, (lab, inp)) in fields.iter().enumerate() {
             let y = y0 + i;
             let active = i as u8 == f.field;
-            cv.put(0, y as i32, lab, Style::fg(if active { th.accent } else { th.muted }).bold().with_bg(bg.bg), self.w);
+            self.text(cv, 1, y as i32, lab.trim(), Style::fg(if active { th.accent } else { th.muted }).bold().with_bg(bg.bg), label_w);
             let fw = self.w.saturating_sub(label_w + 28).max(10);
-            let txt = truncate(&inp.text, fw);
-            cv.put(label_w as i32, y as i32, &pad_to(&txt, fw), Style::fg(th.fg).with_bg(if th.rgb { th.canvas_or(th.bg) } else { Color::Default }), self.w);
+            let field_bg = if th.rgb { th.canvas_or(th.bg) } else { Color::Default };
+            cv.fill(label_w, y, fw, 1, Style::bg(field_bg));
+            let (inp_text, inp_cur) = (inp.text.clone(), inp.cur);
             if active {
-                cur = Some((label_w + str_width(&inp.text[..inp.cur]).min(fw), y));
+                let (cx0, cy0, ch0) = (cv.cursor, cv.cursor_hidden, cv.cursor_shape);
+                self.text_input(cv, label_w, y, &inp_text, inp_cur, Style::fg(th.fg).with_bg(field_bg), label_w + fw);
+                cur = cv.cursor;
+                cursor_hidden = cv.cursor_hidden;
+                (cv.cursor, cv.cursor_hidden, cv.cursor_shape) = (cx0, cy0, ch0);
+            } else {
+                self.text(cv, label_w as i32, y as i32, &inp_text, Style::fg(th.fg).with_bg(field_bg), label_w + fw);
             }
             if i == 0 {
                 let info = format!("{count}  {case}");
-                cv.put(
+                self.text(
+                    cv,
                     (label_w + fw + 2) as i32,
                     y as i32,
                     &info,
@@ -342,18 +518,20 @@ impl App {
                     self.w,
                 );
             } else {
-                cv.put((label_w + fw + 2) as i32, y as i32, "↵ one  Alt+↵ all", Style::fg(th.faint).with_bg(bg.bg), self.w);
+                self.text(cv, (label_w + fw + 2) as i32, y as i32, "↵ one  Alt+↵ all", Style::fg(th.faint).with_bg(bg.bg), self.w);
             }
         }
         if self.overlay.is_none() {
             cv.cursor = cur;
+            cv.cursor_hidden = cursor_hidden;
             cv.cursor_shape = 6;
         }
     }
 
     fn draw_completion(&mut self, cv: &mut Canvas) {
         let th = self.theme.clone();
-        let Some(c) = &self.completion else { return };
+        let Some(c) = self.completion.as_ref().map(|c| (c.items.clone(), c.sel, c.query.clone())) else { return };
+        let c = crate::app::CompletionView { items: c.0, sel: c.1, query: c.2 };
         let Some((cx, cy)) = cv.cursor else { return };
         // (name, folder) like Obsidian's link suggester
         let items: Vec<(String, String)> = if c.items.is_empty() {
@@ -385,15 +563,9 @@ impl App {
             }
             let y = top + k;
             cv.fill(r.x + 1, y, r.w.saturating_sub(2), 1, Style::bg(rbg));
-            let x = cv.put(r.x as i32 + 2, y as i32, &truncate(name, r.w.saturating_sub(4)), st, (r.x + r.w).saturating_sub(1));
+            let x = self.text(cv, r.x as i32 + 2, y as i32, name, st, (r.x + r.w).saturating_sub(1));
             if !dir.is_empty() {
-                cv.put(
-                    x + 2,
-                    y as i32,
-                    &truncate(dir, (r.x + r.w).saturating_sub(x as usize + 4)),
-                    Style::fg(th.faint).with_bg(rbg),
-                    (r.x + r.w).saturating_sub(1),
-                );
+                self.text(cv, x + 2, y as i32, dir, Style::fg(th.faint).with_bg(rbg), (r.x + r.w).saturating_sub(1));
             }
         }
     }
@@ -401,8 +573,8 @@ impl App {
     /// A floating panel. With known colours it is a tinted panel with
     /// rounded half-height edges (like Obsidian's modals); otherwise a box.
     /// Returns the first content row.
-    fn draw_box(&self, cv: &mut Canvas, r: Rect, title: &str) -> usize {
-        let th = &self.theme;
+    fn draw_box(&mut self, cv: &mut Canvas, r: Rect, title: &str) -> usize {
+        let th = self.theme.clone();
         if r.h < 2 || r.w < 4 {
             return r.y;
         }
@@ -413,7 +585,7 @@ impl App {
             cv.put(r.x as i32, r.y as i32, &format!("▗{}▖", "▄".repeat(inner)), Style::fg(bg), self.w);
             cv.put(r.x as i32, (r.y + r.h - 1) as i32, &format!("▝{}▘", "▀".repeat(inner)), Style::fg(bg), self.w);
             if !title.is_empty() {
-                cv.put(r.x as i32 + 3, r.y as i32 + 1, title, Style::fg(th.muted).with_bg(bg).bold(), r.x + r.w - 1);
+                self.text(cv, r.x as i32 + 3, r.y as i32 + 1, title, Style::fg(th.muted).with_bg(bg).bold(), r.x + r.w - 1);
                 return r.y + 2;
             }
             return r.y + 1;
@@ -434,11 +606,13 @@ impl App {
     }
 
     /// A key binding rendered as a keycap chip.
-    fn chip(&self, cv: &mut Canvas, x: i32, y: usize, k: &str, bg: Color, clip: usize) -> i32 {
-        let th = &self.theme;
+    fn chip(&mut self, cv: &mut Canvas, x: i32, y: usize, k: &str, bg: Color, clip: usize) -> i32 {
+        let th = self.theme.clone();
         let chip_bg = if bg == th.hover { th.border } else { th.hover };
         let st = if th.rgb { Style::fg(th.muted).with_bg(chip_bg) } else { Style::fg(th.muted) };
-        let x = cv.put(x, y as i32, &format!(" {k} "), st, clip);
+        let x = cv.put(x, y as i32, " ", st, clip);
+        let x = self.text(cv, x, y as i32, k, st, clip);
+        let x = cv.put(x, y as i32, " ", st, clip);
         cv.put(x, y as i32, " ", Style::bg(bg), clip)
     }
 
@@ -472,18 +646,22 @@ impl App {
         let ix = r.x + 3;
         let iw = r.w.saturating_sub(6);
         if input.text.is_empty() {
-            cv.put(ix as i32, iy as i32, placeholder, Style::fg(th.faint).with_bg(bg), right);
+            self.text(cv, ix as i32, iy as i32, placeholder, Style::fg(th.faint).with_bg(bg), right);
         } else {
-            cv.put(ix as i32, iy as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), right);
+            self.text_input(cv, ix, iy, &input.text, input.cur, Style::fg(th.fg).with_bg(bg), right);
         }
-        cv.cursor = Some((ix + str_width(&input.text[..input.cur]).min(iw), iy));
+        if input.text.is_empty() {
+            cv.cursor = Some((ix, iy));
+            cv.cursor_hidden = false;
+        }
+        let _ = iw;
         cv.cursor_shape = 6;
         let sep = "─".repeat(r.w.saturating_sub(2));
         let sep_st = Style::fg(if th.rgb { th.hover } else { th.border }).with_bg(bg);
         cv.put(r.x as i32 + 1, (iy + 1) as i32, &sep, sep_st, r.x + r.w - 1);
         let list_y = iy + 2;
         if rows.is_empty() {
-            cv.put(ix as i32, list_y as i32, empty, Style::fg(th.faint).with_bg(bg), right);
+            self.text(cv, ix as i32, list_y as i32, empty, Style::fg(th.faint).with_bg(bg), right);
         }
         let start = if sel >= n { sel + 1 - n } else { 0 };
         for (k, (label, detail, hint, m, st)) in rows.iter().enumerate().skip(start).take(n) {
@@ -497,18 +675,22 @@ impl App {
             cv.fill(r.x + 1, y, r.w.saturating_sub(2), 1, Style::bg(rbg));
             let hw = if hint.is_empty() { 0 } else { str_width(hint) + 3 };
             let avail = r.w.saturating_sub(6 + hw);
-            let shown = truncate(label, avail);
-            let mut x = ix;
-            for (ci, ch) in shown.chars().enumerate() {
+            // label runs, fuzzy-matched characters in accent
+            let mut runs: Vec<(String, Style)> = vec![];
+            for (ci, ch) in label.chars().enumerate() {
                 let s = if m.contains(&ci) { base.with_fg(th.accent).bold() } else { base };
-                x = cv.put(x as i32, y as i32, &ch.to_string(), s, right) as usize;
+                match runs.last_mut() {
+                    Some(r) if r.1 == s => r.0.push(ch),
+                    _ => runs.push((ch.to_string(), s)),
+                }
             }
+            let x = self.text_runs(cv, ix as i32, y as i32, &runs, ix + avail) as usize;
             if !detail.is_empty() && x + 3 < ix + avail {
-                let d = truncate(detail, (ix + avail).saturating_sub(x + 2));
-                cv.put(x as i32 + 2, y as i32, &d, Style::fg(th.faint).with_bg(rbg), right);
+                self.text(cv, x as i32 + 2, y as i32, detail, Style::fg(th.faint).with_bg(rbg), ix + avail);
             }
             if !hint.is_empty() {
-                self.chip(cv, right as i32 - str_width(hint) as i32 - 2, y, hint, rbg, right + 1);
+                let hw = self.text_w(hint, Style::fg(th.muted));
+                self.chip(cv, right as i32 - hw as i32 - 2, y, hint, rbg, right + 1);
             }
             self.overlay_hits.insert(0, (Rect { x: r.x + 1, y, w: r.w.saturating_sub(2), h: 1 }, k));
         }
@@ -517,8 +699,13 @@ impl App {
         cv.put(r.x as i32 + 1, fy as i32 - 1, &sep, sep_st, r.x + r.w - 1);
         let mut x = ix as i32;
         for (k, what) in footer {
-            x = cv.put(x, fy as i32, k, Style::fg(th.muted).with_bg(bg).bold(), right);
-            x = cv.put(x + 1, fy as i32, what, Style::fg(th.faint).with_bg(bg), right) + 3;
+            x = self.text_runs(
+                cv,
+                x,
+                fy as i32,
+                &[(k.to_string(), Style::fg(th.muted).with_bg(bg).bold()), (format!(" {what}"), Style::fg(th.faint).with_bg(bg))],
+                right,
+            ) + 3;
         }
     }
 
@@ -603,8 +790,8 @@ impl App {
                 self.overlay_hits.push((r, usize::MAX));
                 let bg = if th.rgb { th.panel } else { Color::Default };
                 let iw = w.saturating_sub(6);
-                cv.put(r.x as i32 + 3, y as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
-                cv.cursor = Some((r.x + 3 + str_width(&input.text[..input.cur]).min(iw), y));
+                let _ = iw;
+                self.text_input(cv, r.x + 3, y, &input.text, input.cur, Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
             }
             Overlay::Confirm { msg, .. } => {
                 let w = (str_width(msg) + 6).min(self.w.saturating_sub(2));
@@ -654,14 +841,8 @@ impl App {
                 }
                 for (k, (t, keys)) in lines.iter().skip(s).take(vis).enumerate() {
                     let y = y0 + k;
-                    cv.put(r.x as i32 + 3, y as i32, &truncate(t, w / 2), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
-                    cv.put(
-                        (r.x + w / 2 + 1) as i32,
-                        y as i32,
-                        &truncate(keys, (w / 2).saturating_sub(3)),
-                        Style::fg(th.accent).with_bg(bg),
-                        r.x + (r.w).saturating_sub(1),
-                    );
+                    self.text(cv, r.x as i32 + 3, y as i32, t, Style::fg(th.fg).with_bg(bg), r.x + w / 2);
+                    self.text(cv, (r.x + w / 2 + 1) as i32, y as i32, keys, Style::fg(th.accent).with_bg(bg), r.x + (r.w).saturating_sub(1));
                 }
                 cv.cursor = None;
             }
