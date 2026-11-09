@@ -52,7 +52,7 @@ It's one native Rust binary with micro-style keys, mouse support and no modes.
   - quick switcher with fuzzy search (`Ctrl+O`) and `[[` autocomplete
   - backlinks, outline, tags and full-text search (`Ctrl+Shift+F`)
   - rename that updates links (`F2`) and a daily note (`Alt+D`)
-  - back/forward history and tabs
+  - back/forward history (one note at a time, no tabs)
 - **Terminal native.** glyph uses your terminal's own colours. It queries the palette
   (OSC 10/11/4) and derives its tints from it. Bundled themes: `dark`, `light`, `nord`,
   `gruvbox`.
@@ -124,7 +124,7 @@ glyph detects capabilities at startup by querying the terminal, not by guessing 
 - Click a ☐ to toggle a task.
 - Ctrl+Click follows links. In reading view a plain click does too.
 - The wheel scrolls whatever is under the pointer.
-- Tabs, file tree, outline and palette entries are all clickable.
+- File tree, outline and palette entries are all clickable.
 
 ## Key bindings
 
@@ -151,10 +151,6 @@ Arrows, Home/End and PgUp/PgDn move; add Shift to select, and Ctrl to move by wo
 | Quick switcher: open note | `Ctrl+O` |
 | Command palette | `Ctrl+P` |
 | New note | `Ctrl+N` |
-| New tab | `Ctrl+T` |
-| Close tab | `Ctrl+W` |
-| Next tab | `Ctrl+Tab`, `Ctrl+Pagedown`, `Alt+.` |
-| Previous tab | `Ctrl+Shift+Tab`, `Ctrl+Pageup`, `Alt+,` |
 | Toggle reading view | `Ctrl+E` |
 | Toggle source mode | `Alt+E` |
 | Toggle file explorer | `Ctrl+\`, `Alt+B` |
@@ -190,7 +186,6 @@ Arrows, Home/End and PgUp/PgDn move; add Shift to select, and Ctrl to move by wo
 | Join lines | `Ctrl+J` |
 | Outdent | `Ctrl+[` |
 | Follow link under cursor | `Alt+Enter`, `F12` |
-| Follow link in new tab | `Alt+Shift+Enter` |
 | Navigate back | `Alt+Left` |
 | Navigate forward | `Alt+Right` |
 | Go to line | `Ctrl+G` |

@@ -579,7 +579,9 @@ fn back_from_untitled_tab_does_not_panic() {
     let mut h = Harness::new(80, 24, &[("a.md", "[[b]]"), ("b.md", "B")]);
     h.keys("right right alt+enter");
     assert_eq!(h.text(), "B");
-    h.keys("ctrl+t escape alt+left alt+left alt+left alt+right alt+right");
+    // an untitled buffer (no file) as the current document
+    h.app.open_text("scratch");
+    h.keys("alt+left alt+left alt+left alt+right alt+right");
     assert!(!h.app.tabs.is_empty(), "still alive");
 }
 
@@ -614,8 +616,7 @@ fn inline_title_and_pristine_open() {
     let s = h.frame();
     // the note name is shown large above the text, and the freshly opened
     // note renders clean (no "# " revealed although the cursor is on line 0)
-    // (row 0 is the tab bar, which also says "My Note")
-    let y = (1..24).find(|&y| h.vt.row(y).contains("My Note")).unwrap_or_else(|| panic!("{s}"));
+    let y = (0..24).find(|&y| h.vt.row(y).contains("My Note")).unwrap_or_else(|| panic!("{s}"));
     let x = (0..80).find(|&x| h.vt.cell(x, y).text.starts_with('M')).unwrap();
     assert_eq!(h.vt.cell(x, y).scale, 2);
     assert!(!s.contains("# Heading"), "{s}");
@@ -647,4 +648,33 @@ fn palette_has_placeholder_and_footer() {
     assert!(s.contains("Select a command..."), "{s}");
     assert!(s.contains("to navigate"));
     assert!(s.contains("Ctrl+S"), "keycap hints");
+}
+
+#[test]
+fn single_document_no_tab_bar() {
+    let mut h = Harness::new(80, 24, &[("a.md", "first note"), ("b.md", "second note")]);
+    let s = h.frame();
+    assert!(s.lines().nth(1).unwrap().contains("first note"), "no tab bar; one row of top padding: {s}");
+    h.keys("ctrl+o");
+    h.type_text("b.md");
+    h.keys("enter");
+    assert_eq!(h.app.tabs.len(), 1, "opening replaces the document");
+    assert_eq!(h.text(), "second note");
+    h.keys("alt+left");
+    assert_eq!(h.text(), "first note");
+    // ctrl+w deletes the previous word (no tab to close)
+    h.keys("ctrl+end ctrl+w");
+    assert_eq!(h.text(), "first ");
+}
+
+#[test]
+fn save_untitled_asks_for_a_name() {
+    let mut h = Harness::new(80, 24, &[("a.md", "x")]);
+    h.app.open_text("");
+    h.type_text("fresh text");
+    h.keys("ctrl+s");
+    assert!(h.vt.text().contains("Save as note"));
+    h.type_text("Fresh");
+    h.keys("enter");
+    assert_eq!(h.file("Fresh.md"), "fresh text");
 }

@@ -95,6 +95,7 @@ pub enum PromptKind {
     GoToLine,
     Rename,
     NewNote,
+    SaveAs,
 }
 
 pub enum ConfirmKind {
@@ -238,7 +239,6 @@ pub struct App {
     pub editor_rect: Rect,
     pub left_rect: Rect,
     pub right_rect: Rect,
-    pub tab_hits: Vec<(usize, usize, usize, bool)>,
     pub overlay_hits: Vec<(Rect, usize)>,
     pub recent: Vec<PathBuf>,
     last_disk_check: Instant,
@@ -312,7 +312,6 @@ impl App {
             editor_rect: Rect::default(),
             left_rect: Rect::default(),
             right_rect: Rect::default(),
-            tab_hits: vec![],
             overlay_hits: vec![],
             recent: vec![],
             last_disk_check: Instant::now(),
@@ -441,7 +440,7 @@ impl App {
 
     pub fn layout_panes(&mut self) {
         let (w, h) = (self.w, self.h);
-        let top = 1usize;
+        let top = 0usize;
         let find_h = match &self.find {
             Some(f) if f.replacing => 2,
             Some(_) => 1,
@@ -455,7 +454,9 @@ impl App {
         self.right_rect = Rect { x: w - rw, y: top, w: rw, h: body_h };
         let ex = if lw > 0 { lw + 1 } else { 0 };
         let ew = w.saturating_sub(ex + if rw > 0 { rw + 1 } else { 0 });
-        self.editor_rect = Rect { x: ex, y: top, w: ew, h: body_h };
+        // a row of breathing room above the note (Obsidian's top padding)
+        let pad = if body_h > 8 { 1 } else { 0 };
+        self.editor_rect = Rect { x: ex, y: top + pad, w: ew, h: body_h - pad };
         let rect = self.editor_rect;
         let ln = self.config.line_numbers;
         let rw_ = if self.config.readable_width == 0 { usize::MAX } else { self.config.readable_width };
@@ -509,21 +510,20 @@ impl App {
                 return;
             }
         };
+        let _ = new_tab; // single-document editor: no tabs
         let tab = Tab { ed, view: View::new(Mode::Live) };
-        let replace = !new_tab && !self.tabs.is_empty() && {
-            let t = &self.tabs[self.cur];
-            !t.ed.dirty() || self.config.autosave
-        };
-        if replace {
-            if self.tabs[self.cur].ed.dirty() {
-                let _ = self.tabs[self.cur].ed.save();
+        if self.tabs.is_empty() {
+            self.tabs.push(tab);
+            self.cur = 0;
+        } else {
+            // navigating away saves the note, like Obsidian
+            let t = &mut self.tabs[self.cur];
+            if t.ed.dirty() && t.ed.path.is_some() {
+                let _ = t.ed.save();
             }
-            let mode = self.tabs[self.cur].view.mode;
+            let mode = t.view.mode;
             self.tabs[self.cur] = tab;
             self.tabs[self.cur].view.mode = if mode == Mode::Source { Mode::Source } else { Mode::Live };
-        } else {
-            self.tabs.push(tab);
-            self.cur = self.tabs.len() - 1;
         }
         self.after_open();
     }
@@ -562,8 +562,12 @@ impl App {
     }
 
     pub fn open_text(&mut self, text: &str) {
-        self.tabs.push(Tab { ed: Editor::new(text), view: View::new(Mode::Live) });
-        self.cur = self.tabs.len() - 1;
+        let tab = Tab { ed: Editor::new(text), view: View::new(Mode::Live) };
+        if self.tabs.is_empty() {
+            self.tabs.push(tab);
+        } else {
+            self.tabs[self.cur] = tab;
+        }
         self.layout_panes();
     }
 
@@ -611,6 +615,10 @@ impl App {
     }
 
     pub fn save(&mut self) {
+        if self.tabs[self.cur].ed.path.is_none() {
+            self.overlay = Some(Overlay::Prompt { title: "Save as note".into(), input: LineInput::default(), kind: PromptKind::SaveAs });
+            return;
+        }
         let r = self.ed().save();
         match r {
             Ok(()) => {
@@ -1514,6 +1522,20 @@ impl App {
                             self.rename_note(&t);
                             return;
                         }
+                        PromptKind::SaveAs => {
+                            if !t.is_empty() {
+                                self.overlay = None;
+                                let path = self.vault.new_note_path(&t, None);
+                                if path.exists() {
+                                    self.set_error("A note with that name already exists");
+                                    return;
+                                }
+                                self.tabs[self.cur].ed.path = Some(path.clone());
+                                self.save();
+                                self.after_open();
+                                return;
+                            }
+                        }
                     }
                     false
                 }
@@ -1727,20 +1749,6 @@ impl App {
             QuickSwitch => self.overlay = Some(Overlay::Switcher { input: LineInput::default(), sel: if self.recent.len() > 1 { 1 } else { 0 } }),
             Palette => self.overlay = Some(Overlay::Palette { input: LineInput::default(), sel: 0 }),
             NewNote => self.new_note("Untitled"),
-            NewTab => {
-                self.tabs.push(Tab { ed: Editor::new(""), view: View::new(Mode::Live) });
-                self.cur = self.tabs.len() - 1;
-                self.overlay = Some(Overlay::Switcher { input: LineInput::default(), sel: 0 });
-            }
-            CloseTab => self.close_tab(self.cur, false),
-            NextTab => {
-                self.cur = (self.cur + 1) % self.tabs.len();
-                self.after_open();
-            }
-            PrevTab => {
-                self.cur = (self.cur + self.tabs.len() - 1) % self.tabs.len();
-                self.after_open();
-            }
             ToggleReading => {
                 let t = self.tab();
                 t.view.mode = if t.view.mode == Mode::Read { Mode::Live } else { Mode::Read };
@@ -1868,10 +1876,10 @@ impl App {
                 self.ed().format_table(l);
                 edited = true;
             }
-            FollowLink | FollowLinkNewTab => {
+            FollowLink => {
                 let p = self.ed().cursor;
                 match self.ed().link_at(p) {
-                    Some(t) => self.follow(t, cmd == FollowLinkNewTab),
+                    Some(t) => self.follow(t, false),
                     None => self.set_status("No link under cursor"),
                 }
             }
@@ -1986,17 +1994,6 @@ impl App {
             } else {
                 self.layout_panes();
                 self.with_env(|env, tab| tab.view.scroll(env, &mut tab.ed, d));
-            }
-            return;
-        }
-        if y == 0 && m.kind == MouseKind::Press {
-            if let Some(&(_, _, i, close)) = self.tab_hits.iter().find(|h| h.0 <= x && x < h.1) {
-                if close || m.button == 1 {
-                    self.close_tab(i, false);
-                } else {
-                    self.cur = i;
-                    self.after_open();
-                }
             }
             return;
         }

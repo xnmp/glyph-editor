@@ -20,7 +20,6 @@ impl App {
         let (w, h) = (self.w, self.h);
         let mut cv = Canvas::new(w, h, self.theme.base());
         self.overlay_hits.clear();
-        self.draw_tabbar(&mut cv);
         if self.left_rect.w > 0 {
             self.draw_files(&mut cv);
         }
@@ -70,46 +69,6 @@ impl App {
 
     fn chrome_bg(&self) -> Style {
         if self.theme.rgb { Style::bg(self.theme.sidebar) } else { Style::new() }
-    }
-
-    fn draw_tabbar(&mut self, cv: &mut Canvas) {
-        let th = self.theme.clone();
-        let bar = self.chrome_bg().with_fg(th.muted);
-        cv.fill(0, 0, self.w, 1, bar);
-        self.tab_hits.clear();
-        let mut x = 1usize;
-        let n = self.tabs.len();
-        for i in 0..n {
-            let name = self.tab_name(i);
-            let active = i == self.cur;
-            let dirty = self.tabs[i].ed.dirty();
-            let label = format!(" {} ", truncate(&name, 24));
-            let lw = str_width(&label);
-            let close = if dirty { "●" } else { "×" };
-            let total = lw + 2;
-            if x + total + 1 >= self.w.saturating_sub(12) && i > self.cur {
-                cv.put(x as i32, 0, "…", bar, self.w);
-                break;
-            }
-            let st = if active { Style::fg(th.fg).with_bg(if th.rgb { th.canvas_or(th.bg) } else { Color::Default }).bold() } else { bar };
-            let st = if active && !th.rgb { st.reverse() } else { st };
-            cv.put(x as i32, 0, &label, st, self.w);
-            let close_st = if dirty { Style::fg(th.accent).with_bg(st.bg) } else { Style::fg(th.faint).with_bg(st.bg) };
-            cv.put((x + lw) as i32, 0, close, if active && !th.rgb { close_st.reverse() } else { close_st }, self.w);
-            cv.put((x + lw + 1) as i32, 0, " ", st, self.w);
-            self.tab_hits.push((x, x + lw, i, false));
-            self.tab_hits.push((x + lw, x + lw + 2, i, true));
-            x += total;
-            cv.put(x as i32, 0, "│", Style::fg(th.border).with_bg(bar.bg), self.w);
-            x += 1;
-        }
-        // right side: vault name
-        let vname = self.vault.root.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let vn = format!(" {} ", truncate(&vname, 20));
-        let vx = self.w.saturating_sub(str_width(&vn) + 1);
-        if vx > x + 2 {
-            cv.put(vx as i32, 0, &vn, Style::fg(th.faint).with_bg(bar.bg), self.w);
-        }
     }
 
     fn draw_files(&mut self, cv: &mut Canvas) {
@@ -617,7 +576,7 @@ impl App {
                     rows,
                     *sel,
                     "No notes found.",
-                    &[("↑↓", "to navigate"), ("↵", "to open"), ("ctrl ↵", "new tab"), ("esc", "to dismiss")],
+                    &[("↑↓", "to navigate"), ("↵", "to open"), ("esc", "to dismiss")],
                 );
             }
             Overlay::Search { input, sel, results, dirty } => {

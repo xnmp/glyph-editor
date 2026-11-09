@@ -89,11 +89,9 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
     let (w, h, _, _) = term.size();
     let mut app = App::new(caps, w, h, &root, config, term.waker());
     let mut opened = false;
-    for p in &paths {
-        if p.is_dir() {
-            continue;
-        }
-        app.open(p, !app.tabs.is_empty());
+    // one note at a time (no tabs): open the first file given
+    if let Some(p) = paths.iter().find(|p| !p.is_dir()) {
+        app.open(p, false);
         opened = true;
     }
     if !opened {
