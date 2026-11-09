@@ -137,6 +137,11 @@ pub struct Config {
     pub remote_images: bool,
     pub line_numbers: bool,
     pub inline_title: bool,
+    /// "auto" (proportional on kitty-graphics terminals), "proportional" or "terminal"
+    pub typography: String,
+    /// prose font size as a fraction of the cell height, and line height
+    pub prose_size: f32,
+    pub line_height: f32,
 }
 
 impl Default for Config {
@@ -150,6 +155,9 @@ impl Default for Config {
             remote_images: true,
             line_numbers: false,
             inline_title: true,
+            typography: "auto".into(),
+            prose_size: 0.8,
+            line_height: 1.5,
         }
     }
 }
@@ -192,6 +200,9 @@ impl Config {
             "remote_images" | "remote-images" => self.remote_images = b,
             "line_numbers" | "line-numbers" => self.line_numbers = b,
             "inline_title" | "inline-title" => self.inline_title = b,
+            "typography" => self.typography = v.to_string(),
+            "prose_size" | "prose-size" => self.prose_size = v.parse().unwrap_or(0.8),
+            "line_height" | "line-height" => self.line_height = v.parse().unwrap_or(1.5),
             _ => {}
         }
     }
@@ -246,6 +257,7 @@ pub struct App {
     /// bumped when notes change on disk (invalidates rendered embeds)
     pub embed_gen: u64,
     pub scroll_seen: ((usize, usize, usize), Option<Instant>),
+    hits_cache: Option<((u64, String, bool, usize), std::rc::Rc<Vec<(Pos, Pos)>>)>,
     pub open_url: Box<dyn Fn(&str)>,
     pub system_paste: Box<dyn Fn() -> Option<String>>,
 }
@@ -318,6 +330,7 @@ impl App {
             theme_idx,
             embed_gen: 0,
             scroll_seen: ((0, 0, 0), None),
+            hits_cache: None,
             open_url: Box::new(open_external),
             system_paste: Box::new(system_paste),
         }
@@ -386,7 +399,38 @@ impl App {
     }
 
     /// Run `f` with a layout environment and the current tab.
+    /// Whether prose is typeset proportionally (as images) right now.
+    pub fn typeset_on(&self) -> bool {
+        let t = &self.theme;
+        let can = self.caps.graphics && self.config.images && t.rgb && t.canvas.rgb().is_some();
+        match self.config.typography.as_str() {
+            "terminal" => false,
+            "proportional" => can,
+            _ => can && self.caps.placeholders,
+        }
+    }
+
+    /// Search hits for the find bar, cached per (version, query, case).
+    pub fn find_hits(&mut self) -> std::rc::Rc<Vec<(Pos, Pos)>> {
+        let Some(f) = &self.find else { return Default::default() };
+        if f.query.text.is_empty() {
+            return Default::default();
+        }
+        let key = (self.tabs[self.cur].ed.buf.version, f.query.text.clone(), f.case, self.cur);
+        if let Some((k, v)) = &self.hits_cache {
+            if *k == key {
+                return v.clone();
+            }
+        }
+        let v = std::rc::Rc::new(self.tabs[self.cur].ed.find_all(&key.1, key.2));
+        self.hits_cache = Some((key, v.clone()));
+        v
+    }
+
     pub fn with_env<R>(&mut self, f: impl FnOnce(&Env, &mut Tab) -> R) -> R {
+        let typeset = self.typeset_on();
+        let hits = self.find_hits();
+        let focused = self.focus == Focus::Editor && self.overlay.is_none() && self.find.is_none();
         let App { theme, images, vault, layout, tabs, cur, heading_mode, config, caps, embed_gen, .. } = self;
         let tab = &mut tabs[*cur];
         let le = |t: &str| vault.exists(t);
@@ -419,6 +463,25 @@ impl App {
         let epoch = images.generation() + *embed_gen * 7919;
         let title_s = tab.ed.path.as_ref().filter(|_| config.inline_title).and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string());
         let reveal = !tab.view.pristine;
+        let typo = if typeset {
+            let rgb = |c: crate::style::Color| c.rgb().unwrap_or((128, 128, 128));
+            let fg = theme.fg.rgb().or(caps.palette.fg).unwrap_or((220, 220, 220));
+            Some(crate::layout::Typo {
+                font_px: images.cell_h as f32 * config.prose_size,
+                line_height: config.line_height,
+                cell_w: images.cell_w,
+                cell_h: images.cell_h,
+                fg,
+                caret: rgb(theme.accent),
+                selection: rgb(theme.selection),
+                hit: rgb(theme.search_bg),
+                hit_cur: rgb(theme.search_cur_bg),
+                panel: rgb(theme.panel),
+            })
+        } else {
+            None
+        };
+        let read = tab.view.mode == Mode::Read;
         let env = Env {
             reveal,
             layout,
@@ -433,6 +496,14 @@ impl App {
                 title: title_s.as_deref(),
                 max_image_rows: (tab.view.rect.h.saturating_sub(2) as u32).clamp(4, 40),
                 epoch,
+                typo,
+                caret: if focused && !read { Some(tab.ed.cursor) } else { None },
+                sel: tab.ed.selection(),
+                hits: &hits,
+                cur_hit: {
+                    let s = tab.ed.selection();
+                    hits.iter().position(|h| Some(*h) == s)
+                },
             },
         };
         f(&env, tab)

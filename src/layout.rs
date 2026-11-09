@@ -69,11 +69,29 @@ pub struct VRow {
     pub image: Option<(Arc<Img>, u32, u16)>,
     pub last: bool,
     pub end_x: u16,
+    /// typeset (proportional) rows: column ↔ pixel map, and this row's index in the image
+    pub tmap: Option<Rc<crate::typeset::TypeMap>>,
+    pub trow: u16,
 }
 
 impl VRow {
     fn new(a: usize, b: usize) -> VRow {
-        VRow { a, b, segs: vec![], scale: 1, kind: RowKind::Text, cursorable: true, fill: None, fill_x0: 0, fill_x1: None, image: None, last: false, end_x: 0 }
+        VRow {
+            a,
+            b,
+            segs: vec![],
+            scale: 1,
+            kind: RowKind::Text,
+            cursorable: true,
+            fill: None,
+            fill_x0: 0,
+            fill_x1: None,
+            image: None,
+            last: false,
+            end_x: 0,
+            tmap: None,
+            trow: 0,
+        }
     }
     fn deco() -> VRow {
         VRow { cursorable: false, kind: RowKind::Deco, ..VRow::new(0, 0) }
@@ -110,6 +128,52 @@ pub struct Ctx<'a> {
     pub epoch: u64,
     /// Obsidian's "inline title": the note name shown large above line 0
     pub title: Option<&'a str>,
+    /// proportional typesetting of prose (None = terminal text)
+    pub typo: Option<Typo>,
+    /// where to draw the caret (typeset lines draw it into the image)
+    pub caret: Option<crate::buffer::Pos>,
+    pub sel: Option<(crate::buffer::Pos, crate::buffer::Pos)>,
+    pub hits: &'a [(crate::buffer::Pos, crate::buffer::Pos)],
+    pub cur_hit: Option<usize>,
+}
+
+/// Typesetting parameters (all colours must be known RGB).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Typo {
+    pub font_px: f32,
+    pub line_height: f32,
+    pub cell_w: u32,
+    pub cell_h: u32,
+    pub fg: (u8, u8, u8),
+    pub caret: (u8, u8, u8),
+    pub selection: (u8, u8, u8),
+    pub hit: (u8, u8, u8),
+    pub hit_cur: (u8, u8, u8),
+    pub panel: (u8, u8, u8),
+}
+
+impl Ctx<'_> {
+    /// Caret, selection and search hits that fall on line `i`.
+    pub fn marks_on(&self, i: usize, len: usize) -> (Option<usize>, Option<(usize, usize)>, Vec<(usize, usize, bool)>) {
+        let caret = self.caret.filter(|c| c.line == i).map(|c| c.col);
+        let sel = self.sel.and_then(|(a, b)| {
+            if a.line <= i && i <= b.line {
+                let sa = if a.line == i { a.col } else { 0 };
+                let sb = if b.line == i { b.col } else { len };
+                (sb > sa).then_some((sa, sb))
+            } else {
+                None
+            }
+        });
+        let start = self.hits.partition_point(|h| h.0.line < i);
+        let hits = self.hits[start..]
+            .iter()
+            .enumerate()
+            .take_while(|(_, h)| h.0.line == i)
+            .map(|(k, h)| (h.0.col, h.1.col, Some(start + k) == self.cur_hit))
+            .collect();
+        (caret, sel, hits)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -551,6 +615,10 @@ impl Layout {
         if i == 0 {
             ctx.title.hash(&mut h);
         }
+        if let Some(t) = &ctx.typo {
+            ((t.font_px * 100.0) as u32, (t.line_height * 100.0) as u32, t.cell_w, t.cell_h, t.fg, t.caret, t.selection).hash(&mut h);
+            ctx.marks_on(i, text.len()).hash(&mut h);
+        }
         (ctx.width, ctx.mode, ctx.heading_mode, ctx.max_image_rows).hash(&mut h);
         if text.contains('!') || text.contains('$') || info.kind == LineKind::Heading || blk.is_some() {
             ctx.epoch.hash(&mut h);
@@ -580,12 +648,185 @@ impl Layout {
         rows
     }
 
+    /// Atoms of a heading line (markers revealed only on the active line).
+    fn heading_atoms(&self, ctx: &Ctx, text: &str, info: &md::LineInfo, active_line: bool, base: Style, reveal: Option<usize>) -> Vec<Atom> {
+        let th = ctx.theme;
+        let mut atoms = vec![];
+        if !info.setext {
+            let mstart = crate::text::leading_ws(text);
+            if mstart > 0 {
+                atoms.push(Atom::hidden(0, mstart));
+            }
+            if active_line {
+                atoms.extend(self.raw_atoms(text, mstart, info.content, th.marker().bold()));
+            } else if info.content > mstart {
+                atoms.push(Atom::hidden(mstart, info.content));
+            }
+        }
+        let mut end = text.len();
+        if !info.setext && !active_line {
+            let t = text.trim_end();
+            let j = t.trim_end_matches('#').len();
+            if j < t.len() && (j == info.content || t[..j].ends_with([' ', '\t'])) {
+                end = t[..j].trim_end().len().max(info.content);
+            }
+        }
+        let start = if info.setext { crate::text::leading_ws(text) } else { info.content };
+        if info.setext && start > 0 {
+            atoms.push(Atom::hidden(0, start));
+        }
+        atoms.extend(self.inline_atoms(ctx, text, start, end, base, reveal, false).0);
+        if end < text.len() {
+            atoms.push(Atom::hidden(end, text.len()));
+        }
+        atoms
+    }
+
+    /// Typeset atoms as proportional text in an image placed `x` cells in.
+    /// Returns None when the text can't be typeset (e.g. CJK) — the caller
+    /// then falls back to terminal cells.
+    pub fn typeset_rows(
+        &self,
+        ctx: &Ctx,
+        i: usize,
+        text: &str,
+        atoms: &[Atom],
+        prefix: Vec<Seg>,
+        cont_prefix: &[Seg],
+        x: usize,
+        heading: Option<u8>,
+        fill: Option<Style>,
+    ) -> Option<Vec<VRow>> {
+        use crate::typeset::{Face, Marks, Params, Piece};
+        let t = ctx.typo?;
+        let imgs = ctx.images?;
+        let th = ctx.theme;
+        let fonts = crate::typeset::Fonts::get();
+        let (scale, hface) = match heading {
+            Some(1) => (1.8, Face::Bold),
+            Some(2) => (1.55, Face::Bold),
+            Some(3) => (1.35, Face::Bold),
+            Some(4) => (1.2, Face::SemiBold),
+            Some(5) => (1.1, Face::SemiBold),
+            Some(_) => (1.0, Face::SemiBold),
+            None => (1.0, Face::Regular),
+        };
+        let rgb = |c: crate::style::Color, d: (u8, u8, u8)| c.rgb().unwrap_or(d);
+        let mut pieces: Vec<Piece> = vec![];
+        for at in atoms {
+            let st = at.style;
+            let is_code = st.bg.is_set() && rgb(st.bg, (0, 0, 0)) == t.panel;
+            let face = if is_code {
+                Face::Mono
+            } else {
+                match (st.has(crate::style::BOLD) || heading.is_some(), st.has(crate::style::ITALIC)) {
+                    (true, true) => Face::BoldItalic,
+                    (true, false) => {
+                        if heading.is_some() {
+                            hface
+                        } else {
+                            Face::Bold
+                        }
+                    }
+                    (false, true) => Face::Italic,
+                    _ => Face::Regular,
+                }
+            };
+            let fg = rgb(st.fg, t.fg);
+            let bg = if st.bg.is_set() { st.bg.rgb() } else { None };
+            let underline = (st.underline != 0).then(|| rgb(st.ul_color, fg));
+            let strike = st.has(crate::style::STRIKE);
+            let pscale = if is_code { scale * 0.92 } else { scale };
+            let (txt, src) = if at.hidden {
+                (String::new(), true)
+            } else if let Some(r) = &at.repl {
+                (r.clone(), false)
+            } else {
+                (text[at.a..at.b].to_string(), true)
+            };
+            if !txt.is_empty() && !fonts.covers(face, &txt) {
+                return None;
+            }
+            // merge plain source runs with identical styling
+            if src && !txt.is_empty() {
+                if let Some(last) = pieces.last_mut() {
+                    if last.src
+                        && !last.text.is_empty()
+                        && last.b == at.a
+                        && last.face == face
+                        && last.fg == fg
+                        && last.bg == bg
+                        && last.underline == underline
+                        && last.strike == strike
+                    {
+                        last.text.push_str(&txt);
+                        last.b = at.b;
+                        continue;
+                    }
+                }
+            }
+            pieces.push(Piece { text: txt, a: at.a, b: at.b, src, face, scale: pscale, fg, bg, underline, strike });
+        }
+        let width_cells = ctx.width.saturating_sub(x).max(4);
+        let pad_top = if heading.is_some() { (t.font_px * scale * 0.35).round() } else { 0.0 };
+        let params = Params {
+            width_px: (width_cells as u32 * t.cell_w) as f32 - 2.0,
+            font_px: t.font_px,
+            line_height: if heading.is_some() { 1.25 } else { t.line_height },
+            pad_top,
+            cell_w: t.cell_w,
+            cell_h: t.cell_h,
+        };
+        let ts = crate::typeset::layout(pieces, &params);
+        let (caret, sel, hits) = ctx.marks_on(i, text.len());
+        let marks = Marks {
+            caret,
+            caret_color: t.caret,
+            selection: sel.into_iter().collect(),
+            selection_color: t.selection,
+            hits: hits.into_iter().map(|(a, b, cur)| (a, b, if cur { t.hit_cur } else { t.hit })).collect(),
+        };
+        let im = ts.render(&marks);
+        let img = imgs.adhoc(&im);
+        let map = Rc::new(ts.map);
+        let _ = th;
+        let mut rows = vec![];
+        let anchors: Vec<(usize, usize)> = (0..map.lines.len()).map(|li| (map.anchor_row(li), li)).collect();
+        for r in 0..map.rows {
+            let anchor = anchors.iter().find(|a| a.0 == r).map(|a| a.1);
+            let (a, b) = match anchor {
+                Some(li) => (map.lines[li].a, map.lines[li].b),
+                None => {
+                    let prev = anchors.iter().rev().find(|a| a.0 < r).map(|a| a.1).unwrap_or(0);
+                    (map.lines.get(prev).map_or(0, |l| l.b), map.lines.get(prev).map_or(0, |l| l.b))
+                }
+            };
+            let mut row = VRow::new(if r == 0 { 0 } else { a }, b);
+            row.kind = RowKind::Image;
+            row.image = Some((img.clone(), r as u32, x as u16));
+            row.cursorable = anchor.is_some();
+            row.segs = if r == 0 { prefix.clone() } else { cont_prefix.to_vec() };
+            row.fill = fill;
+            row.tmap = Some(map.clone());
+            row.trow = r as u16;
+            row.end_x = (x + anchor.map_or(0, |li| (map.lines[li].stops.last().map_or(0.0, |s| s.1) / t.cell_w as f32).ceil() as usize)) as u16;
+            rows.push(row);
+        }
+        if let Some(last) = rows.iter_mut().rev().find(|r| r.cursorable) {
+            last.b = text.len();
+        }
+        Some(rows)
+    }
+
     /// The inline title block: note name at H1 size plus a spacer row.
     fn title_rows(&self, ctx: &Ctx, title: &str) -> Vec<VRow> {
         let th = ctx.theme;
         let st = th.heading_style(1);
         let atoms = self.raw_atoms(title, 0, title.len(), st);
+        // typeset: line index usize::MAX → no caret/selection marks
+        let typeset = if ctx.typo.is_some() { self.typeset_rows(ctx, usize::MAX, title, &atoms, vec![], &[], 0, Some(1), None) } else { None };
         let mut rows = match ctx.heading_mode {
+            _ if typeset.is_some() => typeset.unwrap(),
             HeadingMode::Osc66 => multicell_rows(title, &atoms, heading_scale(1), None, ctx.width),
             HeadingMode::Image => {
                 let col = st.fg.rgb().unwrap_or(if th.dark { (230, 230, 230) } else { (20, 20, 20) });
@@ -607,6 +848,7 @@ impl Layout {
             if r.kind != RowKind::Image {
                 r.kind = RowKind::Deco;
             }
+            r.tmap = None;
             r.cursorable = false;
             r.a = 0;
             r.b = 0;
@@ -1075,6 +1317,36 @@ impl Layout {
                 }
             }
             let (t, _) = self.inline_atoms(ctx, text, co.marker_end, text.len(), title_st, reveal, false);
+            // typeset the title (the icon stays a cell image in the prefix)
+            if ctx.typo.is_some() && !revealed {
+                let mut pre = prefix.clone();
+                let mut px = pre.iter().map(|s| (s.x + s.w) as usize).max().unwrap_or(0);
+                let mut title_atoms: Vec<Atom> = vec![];
+                for at in atoms.iter() {
+                    if at.icon.is_some() {
+                        let mut seg = src_seg(px, 3, "   ", title_st, at.a, at.b);
+                        seg.icon = at.icon.clone();
+                        pre.push(seg);
+                        px += 3;
+                    } else if at.repl.as_deref().is_some_and(|r| r.trim().is_empty()) {
+                        pre.push(src_seg(px, 0, "", title_st, at.a, at.b));
+                    } else {
+                        let mut a2 = at.clone();
+                        if let Some(r) = &a2.repl {
+                            a2.repl = Some(r.trim_start().to_string());
+                        }
+                        title_atoms.push(a2);
+                    }
+                }
+                title_atoms.extend(t.iter().cloned());
+                if co.fold != 0 {
+                    let open = block_active || co.fold == b'+';
+                    title_atoms.push(Atom::repl(text.len(), text.len(), if open { "  ▾".into() } else { "  ▸".into() }, Style::fg(th.muted)));
+                }
+                if let Some(rows) = self.typeset_rows(ctx, i, text, &title_atoms, pre, &cont_prefix, px, None, fill) {
+                    return rows;
+                }
+            }
             atoms.extend(t);
             if co.fold != 0 && !revealed {
                 let open = block_active || co.fold == b'+';
@@ -1183,6 +1455,12 @@ impl Layout {
         if is_heading {
             let hst = th.heading_style(info.level);
             base = base.over(hst);
+            if ctx.typo.is_some() && info.quote_depth == 0 {
+                let atoms = self.heading_atoms(ctx, text, info, active_line, base, reveal);
+                if let Some(rows) = self.typeset_rows(ctx, i, text, &atoms, vec![], &[], 0, Some(info.level), fill) {
+                    return rows;
+                }
+            }
             if big
                 && ctx.heading_mode == HeadingMode::Image
                 && !active_line
@@ -1270,6 +1548,14 @@ impl Layout {
             atoms.push(Atom::hidden(end, text.len()));
         }
         let cont_x = prefix.iter().map(|s| (s.x + s.w) as usize).max().unwrap_or(0);
+        if ctx.typo.is_some() && !is_heading && !atoms.is_empty() {
+            let x = if is_heading { 0 } else { cont_x };
+            if let Some(rows) = self.typeset_rows(ctx, i, text, &atoms, prefix.clone(), &cont_prefix, x, None, fill) {
+                let img_x = if info.lst.is_some() || info.quote_depth > 0 { cont_x } else { 0 };
+                let rows = self.attach_images(ctx, text, &spans, rows, reveal, img_x);
+                return self.attach_embeds(ctx, text, &spans, rows, reveal, img_x);
+            }
+        }
         let mut rows = self.rows_from(
             ctx,
             text,
@@ -1998,6 +2284,11 @@ fn return_false() {}
 
 /// Relative x of a cursor before source byte `col` in this row.
 pub fn x_of_col(row: &VRow, line: &str, col: usize) -> usize {
+    if let Some(m) = &row.tmap {
+        let li = (0..m.lines.len()).find(|&li| m.anchor_row(li) == row.trow as usize).unwrap_or_else(|| m.line_of(col, line.len()));
+        let ix = row.image.as_ref().map_or(0, |i| i.2 as usize);
+        return ix + (m.x_of(li, col) / m.cell_w as f32).round() as usize;
+    }
     for s in &row.segs {
         if !s.src {
             continue;
@@ -2029,6 +2320,12 @@ pub fn x_of_col(row: &VRow, line: &str, col: usize) -> usize {
 
 /// Source byte for a click at relative x.
 pub fn col_of_x(row: &VRow, line: &str, x: usize) -> usize {
+    if let Some(m) = &row.tmap {
+        let _ = line;
+        let li = (0..m.lines.len()).find(|&li| m.anchor_row(li) == row.trow as usize).unwrap_or(0);
+        let ix = row.image.as_ref().map_or(0, |i| i.2 as usize);
+        return m.col_at(li, x.saturating_sub(ix) as f32 * m.cell_w as f32);
+    }
     let mut best = row.a;
     for s in &row.segs {
         if !s.src || s.w == 0 {
@@ -2090,6 +2387,11 @@ mod tests {
             max_image_rows: 10,
             epoch: 0,
             title: None,
+            typo: None,
+            caret: None,
+            sel: None,
+            hits: &[],
+            cur_hit: None,
         };
         let l = Layout::new();
         let active_block = cursor.and_then(|(ln, _)| d.infos[ln].block);
@@ -2168,6 +2470,11 @@ mod tests {
             max_image_rows: 10,
             epoch: 0,
             title: None,
+            typo: None,
+            caret: None,
+            sel: None,
+            hits: &[],
+            cur_hit: None,
         };
         let l = Layout::new();
         let rows = l.rows(&ctx, &lines, &d, 0, None, false);
@@ -2200,6 +2507,11 @@ mod tests {
             max_image_rows: 10,
             epoch: 0,
             title: None,
+            typo: None,
+            caret: None,
+            sel: None,
+            hits: &[],
+            cur_hit: None,
         };
         let l = Layout::new();
         let rows = l.rows(&ctx, &lines, &d, 0, Some(5), false);

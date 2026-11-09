@@ -124,7 +124,7 @@ fn tmpdir(name: &str) -> std::path::PathBuf {
 fn real_binary_end_to_end() {
     let dir = tmpdir("e2e");
     std::fs::write(dir.join("note.md"), "# Heading\n\nsome **bold** text\n").unwrap();
-    let mut p = spawn(&["--no-autosave", "note.md"], &dir, 80, 24);
+    let mut p = spawn(&["--no-autosave", "--typography", "terminal", "note.md"], &dir, 80, 24);
     p.answer_probe();
     p.settle();
     let vt = p.screen(80, 24);
@@ -193,4 +193,23 @@ fn help_and_version() {
     assert!(String::from_utf8_lossy(&o.stdout).contains("USAGE"));
     let o = Command::new(env!("CARGO_BIN_EXE_glyph")).arg("--bogus").output().unwrap();
     assert_eq!(o.status.code(), Some(2));
+}
+
+#[test]
+fn real_binary_typesets_prose_with_kitty_graphics() {
+    let dir = tmpdir("typeset");
+    std::fs::write(dir.join("note.md"), "# Heading\n\nsome **bold** text\n").unwrap();
+    let mut p = spawn(&["--no-autosave", "note.md"], &dir, 80, 24);
+    p.answer_probe();
+    p.settle();
+    let out = String::from_utf8_lossy(&p.out.lock().unwrap()).to_string();
+    assert!(out.contains("\x1b_Ga=T,U=1,f=100"), "prose transmitted as images");
+    let vt = p.screen(80, 24);
+    assert!(vt.placeholder_cells().len() > 20, "shown through Unicode placeholders");
+    p.send(b"\x11");
+    let t = Instant::now();
+    while p.child.try_wait().unwrap().is_none() {
+        assert!(t.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

@@ -17,6 +17,8 @@ USAGE:
 
 OPTIONS:
     --theme NAME        terminal (default), dark, light, nord, gruvbox
+    --typography MODE   proportional | terminal | auto (default: proportional
+                        Inter text via kitty graphics when supported)
     --headings MODE     osc66 | image | plain   (default: detect)
     --no-images         don't render images
     --no-remote-images  don't fetch http(s) images
@@ -54,6 +56,8 @@ fn main() {
                 let v = args.next().unwrap_or_default();
                 config.set("headings", &v);
             }
+            "--typography" => config.typography = args.next().unwrap_or_else(|| "auto".into()),
+            "--terminal-text" => config.typography = "terminal".into(),
             "--no-images" => config.images = false,
             "--no-remote-images" => config.remote_images = false,
             "--no-autosave" => config.autosave = false,

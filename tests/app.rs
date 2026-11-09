@@ -63,7 +63,13 @@ fn headings_use_text_sizing() {
 fn heading_images_without_text_sizing() {
     let mut caps = kitty_caps();
     caps.text_sizing = false;
-    let mut h = Harness::with_caps(80, 24, &[("a.md", "# Image Heading\nbody")], caps, Config { autosave: false, inline_title: false, ..Config::default() });
+    let mut h = Harness::with_caps(
+        80,
+        24,
+        &[("a.md", "# Image Heading\nbody")],
+        caps,
+        Config { autosave: false, inline_title: false, typography: "terminal".into(), ..Config::default() },
+    );
     h.keys("down");
     if h.app.images.has_font() {
         let ph = h.vt.placeholder_cells();
@@ -236,7 +242,13 @@ fn images_via_classic_placements_crop_when_scrolled() {
     for i in 0..40 {
         body.push_str(&format!("line {i}\n"));
     }
-    let mut h = Harness::with_caps(80, 20, &[("a.md", &body)], caps, Config { autosave: false, inline_title: false, ..Config::default() });
+    let mut h = Harness::with_caps(
+        80,
+        20,
+        &[("a.md", &body)],
+        caps,
+        Config { autosave: false, inline_title: false, typography: "terminal".into(), ..Config::default() },
+    );
     png(&h.dir.join("big.png"), 200, 200);
     h.app.layout.clear();
     h.keys("down down");
@@ -432,7 +444,13 @@ fn no_graphics_terminal_emits_no_apc() {
     caps.graphics = false;
     caps.placeholders = false;
     caps.text_sizing = false;
-    let mut h = Harness::with_caps(80, 24, &[("a.md", "# Title\n![x](x.png)")], caps, Config { autosave: false, inline_title: false, ..Config::default() });
+    let mut h = Harness::with_caps(
+        80,
+        24,
+        &[("a.md", "# Title\n![x](x.png)")],
+        caps,
+        Config { autosave: false, inline_title: false, typography: "terminal".into(), ..Config::default() },
+    );
     png(&h.dir.join("x.png"), 10, 10);
     let out = h.app.render();
     assert!(!out.contains("\x1b_G"));
@@ -611,7 +629,7 @@ fn heading_size_ramp_uses_fractional_osc66() {
 
 #[test]
 fn inline_title_and_pristine_open() {
-    let cfg = Config { autosave: false, inline_title: true, ..Config::default() };
+    let cfg = Config { autosave: false, inline_title: true, typography: "terminal".into(), ..Config::default() };
     let mut h = Harness::with_caps(80, 24, &[("My Note.md", "# Heading\nbody **bold**")], kitty_caps(), cfg);
     let s = h.frame();
     // the note name is shown large above the text, and the freshly opened

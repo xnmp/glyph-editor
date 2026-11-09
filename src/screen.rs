@@ -86,6 +86,8 @@ pub struct Canvas {
     pub images: Vec<Arc<ImageData>>,
     pub links: Vec<String>,
     pub cursor: Option<(usize, usize)>,
+    /// cursor position is known but drawn by the app (typeset text)
+    pub cursor_hidden: bool,
     pub cursor_shape: u8, // 2 block, 4 underline, 6 bar
     pub title: Option<String>,
 }
@@ -101,6 +103,7 @@ impl Canvas {
             images: vec![],
             links: vec![String::new()],
             cursor: None,
+            cursor_hidden: false,
             cursor_shape: 6,
             title: None,
         }
@@ -398,7 +401,9 @@ impl Screen {
         self.frame += 1;
         if self.transmitted.len() > 48 {
             let frame = self.frame;
-            let stale: Vec<u32> = self.transmitted.iter().copied().filter(|id| frame - self.last_used.get(id).copied().unwrap_or(0) > 600).collect();
+            // typeset lines are re-rendered as you type: free unused images quickly
+            let age = if self.transmitted.len() > 400 { 2 } else { 120 };
+            let stale: Vec<u32> = self.transmitted.iter().copied().filter(|id| frame - self.last_used.get(id).copied().unwrap_or(0) > age).collect();
             for id in stale {
                 self.transmitted.remove(&id);
                 self.last_used.remove(&id);
@@ -523,7 +528,7 @@ impl Screen {
                 self.live.insert(p.clone(), pid);
             }
         }
-        if let Some((cx, cy)) = cv.cursor {
+        if let Some((cx, cy)) = cv.cursor.filter(|_| !cv.cursor_hidden) {
             if cv.cursor_shape != self.cursor_shape {
                 out.push_str(&format!("\x1b[{} q", cv.cursor_shape));
                 self.cursor_shape = cv.cursor_shape;

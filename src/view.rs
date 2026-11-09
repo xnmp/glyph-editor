@@ -399,7 +399,8 @@ impl View {
                             _ => place.push((data.clone(), *irow, 1, x0, sy)),
                         }
                     }
-                } else if clip_top == 0 {
+                }
+                if clip_top == 0 {
                     for seg in &row.segs {
                         if seg.w == 0 {
                             continue;
@@ -453,13 +454,16 @@ impl View {
                             }
                         }
                     };
-                    for (mi, &(ma, mb)) in matches.iter().enumerate() {
+                    // (typeset rows paint selection and hits into their image)
+                    let cells = row.tmap.is_none();
+                    for (mi, &(ma, mb)) in matches.iter().enumerate().filter(|_| cells) {
                         if ma.line == i {
                             let bg = if Some(mi) == cur_match { theme.search_cur_bg } else { theme.search_bg };
                             paint_range(cv, ma.col, mb.col, bg);
                         }
                     }
                     if let Some((sa, sb)) = sel
+                        && cells
                         && sa.line <= i
                         && i <= sb.line
                         && row.kind == RowKind::Text
@@ -489,6 +493,8 @@ impl View {
                     } else {
                         cursor_at = Some((cx.min(self.cx0 + self.cw), sy));
                         cv.cursor = cursor_at;
+                        // typeset rows draw their own caret into the image
+                        cv.cursor_hidden = row.tmap.is_some();
                     }
                 }
                 y += h;
@@ -540,6 +546,14 @@ impl View {
         if y >= h.y + h.row().height() {
             // below the last row
             return Some(Pos::new(h.line, line.len()));
+        }
+        if let Some(m) = &h.row().tmap {
+            // exact: the visual line under the pointer, then the nearest caret stop
+            let (img_x, trow) = (h.row().image.as_ref().map_or(0, |i| i.2 as usize), h.row().trow as usize);
+            let py = (trow + y.saturating_sub(h.y)) as f32 * m.cell_h as f32 + m.cell_h as f32 / 2.0;
+            let li = m.line_at_y(py);
+            let px = (x.saturating_sub(self.cx0 + img_x)) as f32 * m.cell_w as f32 + m.cell_w as f32 / 2.0;
+            return Some(Pos::new(h.line, m.col_at(li, px)));
         }
         if row.kind == RowKind::Image {
             return Some(Pos::new(h.line, 0));

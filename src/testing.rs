@@ -81,7 +81,7 @@ impl Harness {
 
     pub fn new(w: usize, h: usize, files: &[(&str, &str)]) -> Harness {
         // positional tests don't want the inline title; it has its own test
-        let config = Config { autosave: false, inline_title: false, ..Config::default() };
+        let config = Config { autosave: false, inline_title: false, typography: "terminal".into(), ..Config::default() };
         Harness::with_caps(w, h, files, kitty_caps(), config)
     }
 

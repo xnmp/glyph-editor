@@ -31,6 +31,7 @@ pub mod term;
 pub mod testing;
 pub mod text;
 pub mod theme;
+pub mod typeset;
 pub mod ui;
 pub mod vault;
 pub mod view;

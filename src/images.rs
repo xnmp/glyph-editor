@@ -305,6 +305,12 @@ impl ImageStore {
         Some(IconRef(img))
     }
 
+    /// Encode a freshly drawn image (typeset text) under a new id.
+    pub fn adhoc(&self, im: &RgbaImage) -> Arc<Img> {
+        let id = new_id(&self.shared);
+        Arc::new(Img { data: Arc::new(encode_grid(im, self.cell_w, self.cell_h, id)), char_xs: vec![] })
+    }
+
     /// Heading text drawn with a real font, `rows` cells tall.
     pub fn heading(&self, text: &str, level: u8, max_cols: u32, color: (u8, u8, u8)) -> ImgRef {
         let Some(font) = self.font.clone() else { return ImgRef::Error("no font".into()) };
