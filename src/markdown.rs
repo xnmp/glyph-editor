@@ -178,7 +178,7 @@ pub fn parse_list_marker(line: &str, at: usize) -> Option<ListMarker> {
         }
     }
     let mut lm = ListMarker { start, marker_end, end: i, ordered, number, delim, bullet, task: None, task_start: 0, task_end: 0, depth: 0 };
-    if has_space && i + 2 < b.len() + 0 && b[i] == b'[' && b.get(i + 2) == Some(&b']') {
+    if has_space && i + 2 < b.len() && b[i] == b'[' && b.get(i + 2) == Some(&b']') {
         let c = b[i + 1];
         if b" xX/-!?<>*".contains(&c) && (i + 3 >= b.len() || b[i + 3] == b' ' || b[i + 3] == b'\t') {
             let mut e = i + 3;
@@ -320,12 +320,14 @@ pub fn split_table_row(line: &str) -> Vec<(usize, usize)> {
         i += 1;
     }
     let tr = line.trim_end();
-    if cells.len() > 1 && tr.ends_with('|') && !tr.ends_with("\\|") {
-        if let Some(&(a, e)) = cells.last() {
-            if a == e && a >= tr.len() {
-                cells.pop();
-            }
-        }
+    if cells.len() > 1
+        && tr.ends_with('|')
+        && !tr.ends_with("\\|")
+        && let Some(&(a, e)) = cells.last()
+        && a == e
+        && a >= tr.len()
+    {
+        cells.pop();
     }
     cells
 }
@@ -491,29 +493,32 @@ fn parse_from(lines: &[String], from: usize, sync: Option<(&Document, isize, usi
         id
     };
     let mut i = from;
-    if from == 0 && n > 1 && lines[0].trim_end() == "---" {
-        if let Some(j) = (1..n).find(|&j| matches!(lines[j].trim_end(), "---" | "...")) {
-            add(&mut infos, &mut blocks, BlockKind::Front, 0, j + 1);
-            infos[(0) - base].kind = LineKind::FrontFence;
-            infos[(j) - base].kind = LineKind::FrontFence;
-            for k in 1..j {
-                infos[(k) - base].kind = LineKind::Front;
-            }
-            i = j + 1;
+    if from == 0
+        && n > 1
+        && lines[0].trim_end() == "---"
+        && let Some(j) = (1..n).find(|&j| matches!(lines[j].trim_end(), "---" | "..."))
+    {
+        add(&mut infos, &mut blocks, BlockKind::Front, 0, j + 1);
+        infos[(0) - base].kind = LineKind::FrontFence;
+        infos[(j) - base].kind = LineKind::FrontFence;
+        for k in 1..j {
+            infos[(k) - base].kind = LineKind::Front;
         }
+        i = j + 1;
     }
     let mut list_stack: Vec<usize> = vec![];
     let mut para_open = false;
     while i < n {
         if list_stack.is_empty() && !para_open {
             restart[i - base] = true;
-            if let Some((old, delta, min_line)) = sync {
-                if i >= min_line && i > from {
-                    let oi = i as isize - delta;
-                    if oi >= 0 && (oi as usize) < old.restart.len() && old.restart[oi as usize] {
-                        sync_at = Some(i);
-                        break;
-                    }
+            if let Some((old, delta, min_line)) = sync
+                && i >= min_line
+                && i > from
+            {
+                let oi = i as isize - delta;
+                if oi >= 0 && (oi as usize) < old.restart.len() && old.restart[oi as usize] {
+                    sync_at = Some(i);
+                    break;
                 }
             }
         }
@@ -651,20 +656,24 @@ fn parse_from(lines: &[String], from: usize, sync: Option<(&Document, isize, usi
             continue;
         }
         // setext underline
-        if let Some(level) = setext(line) {
-            if para_open && i > 0 && infos[(i - 1) - base].kind == LineKind::Text && infos[(i - 1) - base].lst.is_none() && list_stack.is_empty() {
-                let prev = &mut infos[(i - 1) - base];
-                prev.kind = LineKind::Heading;
-                prev.level = level;
-                prev.setext = true;
-                prev.content = crate::text::leading_ws(&lines[i - 1]);
-                infos[(i) - base].kind = LineKind::SetextRule;
-                infos[(i) - base].level = level;
-                add(&mut infos, &mut blocks, BlockKind::Heading, i - 1, i + 1);
-                para_open = false;
-                i += 1;
-                continue;
-            }
+        if let Some(level) = setext(line)
+            && para_open
+            && i > 0
+            && infos[(i - 1) - base].kind == LineKind::Text
+            && infos[(i - 1) - base].lst.is_none()
+            && list_stack.is_empty()
+        {
+            let prev = &mut infos[(i - 1) - base];
+            prev.kind = LineKind::Heading;
+            prev.level = level;
+            prev.setext = true;
+            prev.content = crate::text::leading_ws(&lines[i - 1]);
+            infos[(i) - base].kind = LineKind::SetextRule;
+            infos[(i) - base].level = level;
+            add(&mut infos, &mut blocks, BlockKind::Heading, i - 1, i + 1);
+            para_open = false;
+            i += 1;
+            continue;
         }
         classify_inner(line, 0, &mut infos[(i) - base], &mut list_stack);
         if infos[(i) - base].kind == LineKind::Heading {
@@ -729,22 +738,23 @@ fn classify_inner(line: &str, at: usize, info: &mut LineInfo, stack: &mut Vec<us
         stack.clear();
         return;
     }
-    if at == 0 && rest.starts_with("[^") {
-        if let Some(close) = rest.find("]:") {
-            if !rest[2..close].contains(' ') && close > 2 {
-                info.kind = LineKind::FootDef;
-                let mut c = close + 2;
-                if rest.as_bytes().get(c) == Some(&b' ') {
-                    c += 1;
-                }
-                info.content = c;
-                return;
-            }
+    if at == 0
+        && rest.starts_with("[^")
+        && let Some(close) = rest.find("]:")
+        && !rest[2..close].contains(' ')
+        && close > 2
+    {
+        info.kind = LineKind::FootDef;
+        let mut c = close + 2;
+        if rest.as_bytes().get(c) == Some(&b' ') {
+            c += 1;
         }
+        info.content = c;
+        return;
     }
     if let Some(mut lm) = parse_list_marker(line, at) {
         while let Some(&top) = stack.last() {
-            if top >= indent + 1 {
+            if top > indent {
                 stack.pop();
             } else {
                 break;
@@ -807,7 +817,19 @@ pub struct Span {
 
 impl Span {
     fn new(kind: SpanKind, start: usize, end: usize, open_end: usize, close_start: usize) -> Span {
-        Span { kind, start, end, open_end, close_start, target: String::new(), label: String::new(), anchor: String::new(), width: None, height: None, display: false }
+        Span {
+            kind,
+            start,
+            end,
+            open_end,
+            close_start,
+            target: String::new(),
+            label: String::new(),
+            anchor: String::new(),
+            width: None,
+            height: None,
+            display: false,
+        }
     }
     pub fn markers(&self) -> [(usize, usize); 2] {
         [(self.start, self.open_end), (self.close_start, self.end)]
@@ -1028,16 +1050,16 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Vec<Span> {
             }
             b'$' => {
                 if i + 1 < end && b[i + 1] == b'$' {
-                    if let Some(p) = s[i + 2..end].find("$$") {
-                        if p > 0 {
-                            let close = i + 2 + p;
-                            let mut sp = Span::new(SpanKind::Math, i, close + 2, i + 2, close);
-                            sp.display = true;
-                            sp.target = s[i + 2..close].to_string();
-                            spans.push(sp);
-                            i = close + 2;
-                            continue;
-                        }
+                    if let Some(p) = s[i + 2..end].find("$$")
+                        && p > 0
+                    {
+                        let close = i + 2 + p;
+                        let mut sp = Span::new(SpanKind::Math, i, close + 2, i + 2, close);
+                        sp.display = true;
+                        sp.target = s[i + 2..close].to_string();
+                        spans.push(sp);
+                        i = close + 2;
+                        continue;
                     }
                     i += 2;
                     continue;
@@ -1056,54 +1078,54 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Vec<Span> {
                         }
                         break;
                     }
-                    if let Some(f) = found {
-                        if f > i + 1 {
-                            let mut sp = Span::new(SpanKind::Math, i, f + 1, i + 1, f);
-                            sp.target = s[i + 1..f].to_string();
-                            spans.push(sp);
-                            i = f + 1;
-                            continue;
-                        }
+                    if let Some(f) = found
+                        && f > i + 1
+                    {
+                        let mut sp = Span::new(SpanKind::Math, i, f + 1, i + 1, f);
+                        sp.target = s[i + 1..f].to_string();
+                        spans.push(sp);
+                        i = f + 1;
+                        continue;
                     }
                 }
                 i += 1;
                 continue;
             }
             b'!' if s[i..end].starts_with("![[") => {
-                if let Some(p) = s[i + 3..end].find("]]") {
-                    if p > 0 {
-                        let close = i + 3 + p;
-                        let (t, w, h) = size_suffix(&s[i + 3..close]);
-                        let mut sp = Span::new(SpanKind::Embed, i, close + 2, close + 2, close + 2);
-                        let (tgt, anchor) = t.split_once('#').unwrap_or((t, ""));
-                        sp.target = tgt.trim().to_string();
-                        sp.anchor = anchor.to_string();
-                        sp.width = w;
-                        sp.height = h;
-                        spans.push(sp);
-                        i = close + 2;
-                        continue;
-                    }
+                if let Some(p) = s[i + 3..end].find("]]")
+                    && p > 0
+                {
+                    let close = i + 3 + p;
+                    let (t, w, h) = size_suffix(&s[i + 3..close]);
+                    let mut sp = Span::new(SpanKind::Embed, i, close + 2, close + 2, close + 2);
+                    let (tgt, anchor) = t.split_once('#').unwrap_or((t, ""));
+                    sp.target = tgt.trim().to_string();
+                    sp.anchor = anchor.to_string();
+                    sp.width = w;
+                    sp.height = h;
+                    spans.push(sp);
+                    i = close + 2;
+                    continue;
                 }
             }
             b'[' if s[i..end].starts_with("[[") => {
-                if let Some(p) = s[i + 2..end].find("]]") {
-                    if p > 0 {
-                        let close = i + 2 + p;
-                        let inner = &s[i + 2..close];
-                        let (target, alias, open_end) = match inner.find('|') {
-                            Some(bar) => (&inner[..bar], Some(&inner[bar + 1..]), i + 2 + bar + 1),
-                            None => (inner, None, i + 2),
-                        };
-                        let (tgt, anchor) = target.split_once('#').unwrap_or((target, ""));
-                        let mut sp = Span::new(SpanKind::WikiLink, i, close + 2, open_end, close);
-                        sp.target = tgt.trim().to_string();
-                        sp.anchor = anchor.to_string();
-                        sp.label = alias.unwrap_or("").to_string();
-                        spans.push(sp);
-                        i = close + 2;
-                        continue;
-                    }
+                if let Some(p) = s[i + 2..end].find("]]")
+                    && p > 0
+                {
+                    let close = i + 2 + p;
+                    let inner = &s[i + 2..close];
+                    let (target, alias, open_end) = match inner.find('|') {
+                        Some(bar) => (&inner[..bar], Some(&inner[bar + 1..]), i + 2 + bar + 1),
+                        None => (inner, None, i + 2),
+                    };
+                    let (tgt, anchor) = target.split_once('#').unwrap_or((target, ""));
+                    let mut sp = Span::new(SpanKind::WikiLink, i, close + 2, open_end, close);
+                    sp.target = tgt.trim().to_string();
+                    sp.anchor = anchor.to_string();
+                    sp.label = alias.unwrap_or("").to_string();
+                    spans.push(sp);
+                    i = close + 2;
+                    continue;
                 }
             }
             b'!' if i + 1 < end && b[i + 1] == b'[' => {
@@ -1120,16 +1142,17 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Vec<Span> {
                 }
             }
             b'[' => {
-                if i + 1 < end && b[i + 1] == b'^' {
-                    if let Some(p) = s[i + 2..end].find(']') {
-                        let close = i + 2 + p;
-                        if p > 0 && !s[i + 2..close].contains(' ') {
-                            let mut sp = Span::new(SpanKind::FootRef, i, close + 1, i + 2, close);
-                            sp.target = s[i + 2..close].to_string();
-                            spans.push(sp);
-                            i = close + 1;
-                            continue;
-                        }
+                if i + 1 < end
+                    && b[i + 1] == b'^'
+                    && let Some(p) = s[i + 2..end].find(']')
+                {
+                    let close = i + 2 + p;
+                    if p > 0 && !s[i + 2..close].contains(' ') {
+                        let mut sp = Span::new(SpanKind::FootRef, i, close + 1, i + 2, close);
+                        sp.target = s[i + 2..close].to_string();
+                        spans.push(sp);
+                        i = close + 1;
+                        continue;
                     }
                 }
                 if let Some((ta, tb, da, db, close)) = find_link_end(s, i, end) {
@@ -1149,16 +1172,15 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Vec<Span> {
                     i = stop;
                     continue;
                 }
-                if rest.starts_with("<http://") || rest.starts_with("<https://") || rest.starts_with("<mailto:") {
-                    if let Some(p) = rest.find('>') {
-                        if !rest[..p].contains(' ') {
-                            let mut sp = Span::new(SpanKind::Url, i, i + p + 1, i + 1, i + p);
-                            sp.target = rest[1..p].to_string();
-                            spans.push(sp);
-                            i += p + 1;
-                            continue;
-                        }
-                    }
+                if (rest.starts_with("<http://") || rest.starts_with("<https://") || rest.starts_with("<mailto:"))
+                    && let Some(p) = rest.find('>')
+                    && !rest[..p].contains(' ')
+                {
+                    let mut sp = Span::new(SpanKind::Url, i, i + p + 1, i + 1, i + p);
+                    sp.target = rest[1..p].to_string();
+                    spans.push(sp);
+                    i += p + 1;
+                    continue;
                 }
             }
             b'%' if s[i..end].starts_with("%%") => {
@@ -1169,27 +1191,27 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Vec<Span> {
             }
             b'h' | b'f' | b'w' => {
                 let pc = char_before(s, i, start);
-                if !(pc.is_alphanumeric() || pc == '/' || pc == ':' || pc == '@') || i == start {
-                    if let Some(e) = match_url(s, i, end) {
-                        let mut sp = Span::new(SpanKind::Url, i, e, i, e);
-                        let u = &s[i..e];
-                        sp.target = if u.starts_with("www.") { format!("https://{u}") } else { u.to_string() };
-                        spans.push(sp);
-                        i = e;
-                        continue;
-                    }
+                if (!(pc.is_alphanumeric() || pc == '/' || pc == ':' || pc == '@') || i == start)
+                    && let Some(e) = match_url(s, i, end)
+                {
+                    let mut sp = Span::new(SpanKind::Url, i, e, i, e);
+                    let u = &s[i..e];
+                    sp.target = if u.starts_with("www.") { format!("https://{u}") } else { u.to_string() };
+                    spans.push(sp);
+                    i = e;
+                    continue;
                 }
             }
             b'#' => {
                 let pc = char_before(s, i, start);
-                if i == start || pc == ' ' || pc == '\t' || pc == '(' || pc == '[' {
-                    if let Some(e) = tag_end(s, i, end) {
-                        let mut sp = Span::new(SpanKind::Tag, i, e, i, e);
-                        sp.target = s[i + 1..e].to_string();
-                        spans.push(sp);
-                        i = e;
-                        continue;
-                    }
+                if (i == start || pc == ' ' || pc == '\t' || pc == '(' || pc == '[')
+                    && let Some(e) = tag_end(s, i, end)
+                {
+                    let mut sp = Span::new(SpanKind::Tag, i, e, i, e);
+                    sp.target = s[i + 1..e].to_string();
+                    spans.push(sp);
+                    i = e;
+                    continue;
                 }
             }
             b'*' | b'_' | b'~' | b'=' => {
@@ -1350,7 +1372,18 @@ mod tests {
         let names: Vec<_> = k.iter().map(|x| x.0).collect();
         assert_eq!(
             names,
-            vec![SpanKind::Link, SpanKind::Strong, SpanKind::WikiLink, SpanKind::Tag, SpanKind::Code, SpanKind::Math, SpanKind::Url, SpanKind::Image, SpanKind::Embed, SpanKind::FootRef]
+            vec![
+                SpanKind::Link,
+                SpanKind::Strong,
+                SpanKind::WikiLink,
+                SpanKind::Tag,
+                SpanKind::Code,
+                SpanKind::Math,
+                SpanKind::Url,
+                SpanKind::Image,
+                SpanKind::Embed,
+                SpanKind::FootRef
+            ]
         );
         let sp = parse_inline(s, 0, s.len());
         let w = sp.iter().find(|x| x.kind == SpanKind::WikiLink).unwrap();
@@ -1381,10 +1414,38 @@ mod tests {
 
     #[test]
     fn blocks() {
-        let (_l, d) = doc("---\na: 1\n---\n# H\ntext\n- [ ] task\n  - sub\n> [!tip]- Title\n> body\n\n| a | b |\n|---|:-:|\n| 1 | 2 |\n```py\nx=1\n```\nSetext\n===\n$$\nx\n$$\n---");
+        let (_l, d) = doc(
+            "---\na: 1\n---\n# H\ntext\n- [ ] task\n  - sub\n> [!tip]- Title\n> body\n\n| a | b |\n|---|:-:|\n| 1 | 2 |\n```py\nx=1\n```\nSetext\n===\n$$\nx\n$$\n---",
+        );
         let k: Vec<LineKind> = d.infos.iter().map(|i| i.kind).collect();
         use LineKind::*;
-        assert_eq!(k, vec![FrontFence, Front, FrontFence, Heading, Text, Text, Text, CalloutHead, Text, Blank, TableHead, TableDelim, TableRow, Fence, Code, Fence, Heading, SetextRule, MathFence, Math, MathFence, Hr]);
+        assert_eq!(
+            k,
+            vec![
+                FrontFence,
+                Front,
+                FrontFence,
+                Heading,
+                Text,
+                Text,
+                Text,
+                CalloutHead,
+                Text,
+                Blank,
+                TableHead,
+                TableDelim,
+                TableRow,
+                Fence,
+                Code,
+                Fence,
+                Heading,
+                SetextRule,
+                MathFence,
+                Math,
+                MathFence,
+                Hr
+            ]
+        );
         assert_eq!(d.infos[5].lst.as_ref().unwrap().task, Some(' '));
         assert_eq!(d.infos[6].lst.as_ref().unwrap().depth, 1);
         let c = d.infos[7].callout.as_ref().unwrap();

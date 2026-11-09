@@ -62,6 +62,10 @@ fn main() {
 
 ![A gradient|420](assets/aurora.png)
 
+### Embeds
+
+![[Daily Log]]
+
 ### Math
 
 $$

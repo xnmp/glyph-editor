@@ -2,29 +2,135 @@
 
 fn symbol(name: &str) -> Option<&'static str> {
     Some(match name {
-        "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ", "epsilon" => "ϵ", "varepsilon" => "ε",
-        "zeta" => "ζ", "eta" => "η", "theta" => "θ", "vartheta" => "ϑ", "iota" => "ι", "kappa" => "κ",
-        "lambda" => "λ", "mu" => "μ", "nu" => "ν", "xi" => "ξ", "pi" => "π", "varpi" => "ϖ", "rho" => "ρ",
-        "varrho" => "ϱ", "sigma" => "σ", "varsigma" => "ς", "tau" => "τ", "upsilon" => "υ", "phi" => "ϕ",
-        "varphi" => "φ", "chi" => "χ", "psi" => "ψ", "omega" => "ω",
-        "Gamma" => "Γ", "Delta" => "Δ", "Theta" => "Θ", "Lambda" => "Λ", "Xi" => "Ξ", "Pi" => "Π",
-        "Sigma" => "Σ", "Upsilon" => "Υ", "Phi" => "Φ", "Psi" => "Ψ", "Omega" => "Ω",
-        "sum" => "∑", "prod" => "∏", "int" => "∫", "iint" => "∬", "oint" => "∮", "infty" => "∞",
-        "partial" => "∂", "nabla" => "∇", "pm" => "±", "mp" => "∓", "times" => "×", "div" => "÷",
-        "cdot" => "·", "cdots" => "⋯", "ldots" | "dots" => "…", "vdots" => "⋮", "ast" => "∗", "star" => "⋆",
-        "circ" => "∘", "bullet" => "∙", "oplus" => "⊕", "otimes" => "⊗", "leq" | "le" => "≤", "geq" | "ge" => "≥",
-        "neq" | "ne" => "≠", "approx" => "≈", "equiv" => "≡", "sim" => "∼", "simeq" => "≃", "cong" => "≅",
-        "propto" => "∝", "ll" => "≪", "gg" => "≫", "in" => "∈", "notin" => "∉", "ni" => "∋", "subset" => "⊂",
-        "supset" => "⊃", "subseteq" => "⊆", "supseteq" => "⊇", "cup" => "∪", "cap" => "∩", "setminus" => "∖",
-        "emptyset" | "varnothing" => "∅", "forall" => "∀", "exists" => "∃", "neg" | "lnot" => "¬",
-        "land" | "wedge" => "∧", "lor" | "vee" => "∨", "to" | "rightarrow" => "→", "leftarrow" | "gets" => "←",
-        "Rightarrow" => "⇒", "Leftarrow" => "⇐", "leftrightarrow" => "↔", "Leftrightarrow" => "⇔",
-        "iff" => "⟺", "implies" => "⟹", "mapsto" => "↦", "uparrow" => "↑", "downarrow" => "↓", "perp" => "⊥",
-        "parallel" => "∥", "angle" => "∠", "prime" => "′", "hbar" => "ℏ", "ell" => "ℓ", "aleph" => "ℵ",
-        "langle" => "⟨", "rangle" => "⟩", "lceil" => "⌈", "rceil" => "⌉", "lfloor" => "⌊", "rfloor" => "⌋",
-        "quad" => "  ", "qquad" => "    ", "lim" => "lim", "sin" => "sin", "cos" => "cos", "tan" => "tan",
-        "log" => "log", "ln" => "ln", "exp" => "exp", "max" => "max", "min" => "min", "sup" => "sup",
-        "inf" => "inf", "det" => "det", "gcd" => "gcd", "mod" | "bmod" => "mod",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ϵ",
+        "varepsilon" => "ε",
+        "zeta" => "ζ",
+        "eta" => "η",
+        "theta" => "θ",
+        "vartheta" => "ϑ",
+        "iota" => "ι",
+        "kappa" => "κ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "nu" => "ν",
+        "xi" => "ξ",
+        "pi" => "π",
+        "varpi" => "ϖ",
+        "rho" => "ρ",
+        "varrho" => "ϱ",
+        "sigma" => "σ",
+        "varsigma" => "ς",
+        "tau" => "τ",
+        "upsilon" => "υ",
+        "phi" => "ϕ",
+        "varphi" => "φ",
+        "chi" => "χ",
+        "psi" => "ψ",
+        "omega" => "ω",
+        "Gamma" => "Γ",
+        "Delta" => "Δ",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Xi" => "Ξ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Upsilon" => "Υ",
+        "Phi" => "Φ",
+        "Psi" => "Ψ",
+        "Omega" => "Ω",
+        "sum" => "∑",
+        "prod" => "∏",
+        "int" => "∫",
+        "iint" => "∬",
+        "oint" => "∮",
+        "infty" => "∞",
+        "partial" => "∂",
+        "nabla" => "∇",
+        "pm" => "±",
+        "mp" => "∓",
+        "times" => "×",
+        "div" => "÷",
+        "cdot" => "·",
+        "cdots" => "⋯",
+        "ldots" | "dots" => "…",
+        "vdots" => "⋮",
+        "ast" => "∗",
+        "star" => "⋆",
+        "circ" => "∘",
+        "bullet" => "∙",
+        "oplus" => "⊕",
+        "otimes" => "⊗",
+        "leq" | "le" => "≤",
+        "geq" | "ge" => "≥",
+        "neq" | "ne" => "≠",
+        "approx" => "≈",
+        "equiv" => "≡",
+        "sim" => "∼",
+        "simeq" => "≃",
+        "cong" => "≅",
+        "propto" => "∝",
+        "ll" => "≪",
+        "gg" => "≫",
+        "in" => "∈",
+        "notin" => "∉",
+        "ni" => "∋",
+        "subset" => "⊂",
+        "supset" => "⊃",
+        "subseteq" => "⊆",
+        "supseteq" => "⊇",
+        "cup" => "∪",
+        "cap" => "∩",
+        "setminus" => "∖",
+        "emptyset" | "varnothing" => "∅",
+        "forall" => "∀",
+        "exists" => "∃",
+        "neg" | "lnot" => "¬",
+        "land" | "wedge" => "∧",
+        "lor" | "vee" => "∨",
+        "to" | "rightarrow" => "→",
+        "leftarrow" | "gets" => "←",
+        "Rightarrow" => "⇒",
+        "Leftarrow" => "⇐",
+        "leftrightarrow" => "↔",
+        "Leftrightarrow" => "⇔",
+        "iff" => "⟺",
+        "implies" => "⟹",
+        "mapsto" => "↦",
+        "uparrow" => "↑",
+        "downarrow" => "↓",
+        "perp" => "⊥",
+        "parallel" => "∥",
+        "angle" => "∠",
+        "prime" => "′",
+        "hbar" => "ℏ",
+        "ell" => "ℓ",
+        "aleph" => "ℵ",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "quad" => "  ",
+        "qquad" => "    ",
+        "lim" => "lim",
+        "sin" => "sin",
+        "cos" => "cos",
+        "tan" => "tan",
+        "log" => "log",
+        "ln" => "ln",
+        "exp" => "exp",
+        "max" => "max",
+        "min" => "min",
+        "sup" => "sup",
+        "inf" => "inf",
+        "det" => "det",
+        "gcd" => "gcd",
+        "mod" | "bmod" => "mod",
         "left" | "right" | "big" | "Big" | "bigg" | "Bigg" | "displaystyle" | "limits" => "",
         _ => return None,
     })
@@ -90,17 +196,17 @@ impl P<'_> {
     fn command(&mut self) -> String {
         self.i += 1;
         let start = self.i;
-        if let Some(c) = self.peek() {
-            if !c.is_ascii_alphabetic() {
-                self.i += 1;
-                return match c {
-                    ',' | ';' | ':' | ' ' => " ".into(),
-                    '!' => String::new(),
-                    '|' => "‖".into(),
-                    '\\' => "; ".into(),
-                    c => c.to_string(),
-                };
-            }
+        if let Some(c) = self.peek()
+            && !c.is_ascii_alphabetic()
+        {
+            self.i += 1;
+            return match c {
+                ',' | ';' | ':' | ' ' => " ".into(),
+                '!' => String::new(),
+                '|' => "‖".into(),
+                '\\' => "; ".into(),
+                c => c.to_string(),
+            };
         }
         while self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
             self.i += 1;
@@ -132,16 +238,29 @@ impl P<'_> {
                 .group()
                 .chars()
                 .map(|c| match c {
-                    'R' => 'ℝ', 'N' => 'ℕ', 'Z' => 'ℤ', 'Q' => 'ℚ', 'C' => 'ℂ', 'P' => 'ℙ', 'H' => 'ℍ',
+                    'R' => 'ℝ',
+                    'N' => 'ℕ',
+                    'Z' => 'ℤ',
+                    'Q' => 'ℚ',
+                    'C' => 'ℂ',
+                    'P' => 'ℙ',
+                    'H' => 'ℍ',
                     c => c,
                 })
                 .collect(),
-            "mathcal" => self.group().chars().map(|c| if c.is_ascii_uppercase() { char::from_u32(0x1D4D0 + (c as u32 - 'A' as u32)).unwrap_or(c) } else { c }).collect(),
+            "mathcal" => {
+                self.group().chars().map(|c| if c.is_ascii_uppercase() { char::from_u32(0x1D4D0 + (c as u32 - 'A' as u32)).unwrap_or(c) } else { c }).collect()
+            }
             "text" | "mathrm" | "mathbf" | "mathit" | "operatorname" | "textbf" | "textit" | "mathsf" | "mathtt" | "boldsymbol" => self.group(),
             "hat" | "bar" | "vec" | "dot" | "ddot" | "tilde" | "overline" => {
                 let mark = match name.as_str() {
-                    "hat" => '\u{302}', "bar" => '\u{304}', "vec" => '\u{20d7}', "dot" => '\u{307}',
-                    "ddot" => '\u{308}', "tilde" => '\u{303}', _ => '\u{305}',
+                    "hat" => '\u{302}',
+                    "bar" => '\u{304}',
+                    "vec" => '\u{20d7}',
+                    "dot" => '\u{307}',
+                    "ddot" => '\u{308}',
+                    "tilde" => '\u{303}',
+                    _ => '\u{305}',
                 };
                 self.group().chars().flat_map(|c| [c, mark]).collect()
             }
@@ -155,10 +274,10 @@ impl P<'_> {
 }
 
 fn script(text: String, f: fn(char) -> Option<char>, marker: char) -> String {
-    if !text.is_empty() {
-        if let Some(s) = text.chars().map(f).collect::<Option<String>>() {
-            return s;
-        }
+    if !text.is_empty()
+        && let Some(s) = text.chars().map(f).collect::<Option<String>>()
+    {
+        return s;
     }
     if text.chars().count() == 1 { format!("{marker}{text}") } else { format!("{marker}({text})") }
 }

@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Sender, channel};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use image::{DynamicImage, Rgba, RgbaImage};
@@ -186,7 +186,14 @@ impl ImageStore {
         if remote && !self.allow_remote {
             return ImgRef::Error("remote images disabled".into());
         }
-        let mtime = if remote { 0 } else { std::fs::metadata(&path).and_then(|m| m.modified()).map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)).unwrap_or(0) };
+        let mtime = if remote {
+            0
+        } else {
+            std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0))
+                .unwrap_or(0)
+        };
         let key = format!("img|{}|{mtime}|{max_cols}|{max_rows}|{req_w:?}|{req_h:?}", path.display());
         if let Some(r) = self.lookup(&key) {
             return r;
@@ -209,7 +216,7 @@ impl ImageStore {
         let (cw, ch) = (self.cell_w, self.cell_h);
         let text = text.to_string();
         // headings render synchronously: they are small and must not flicker
-        let r = render_text(&font, &text, if level == 1 { 1.3 } else { 1.08 } * ch as f32, max_cols * cw, 2 * ch, color);
+        let r = render_text(&font, &text, if level == 1 { 1.55 } else { 1.3 } * ch as f32, max_cols * cw, 2 * ch, color);
         let out = match r {
             Some((im, xs)) => {
                 let id = new_id(&self.shared);
@@ -237,12 +244,14 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() && s.is_char_boundary(i + 3) {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && s.is_char_boundary(i + 3)
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -272,11 +281,7 @@ pub fn fit(im: DynamicImage, max_w: u32, max_h: u32, req_w: Option<u32>, req_h: 
     let s = (max_w as f64 / tw.max(1) as f64).min(max_h as f64 / th.max(1) as f64).min(1.0);
     tw = ((tw as f64 * s).round() as u32).max(1);
     th = ((th as f64 * s).round() as u32).max(1);
-    if (tw, th) == (w0, h0) {
-        im.to_rgba8()
-    } else {
-        im.resize_exact(tw, th, image::imageops::FilterType::Lanczos3).to_rgba8()
-    }
+    if (tw, th) == (w0, h0) { im.to_rgba8() } else { im.resize_exact(tw, th, image::imageops::FilterType::Lanczos3).to_rgba8() }
 }
 
 /// Pad to whole cells and PNG-encode.
@@ -311,10 +316,10 @@ fn load_font() -> Option<ab_glyph::FontVec> {
     }
     cands.extend(FONT_CANDIDATES.iter().map(PathBuf::from));
     for c in &cands {
-        if let Ok(bytes) = std::fs::read(c) {
-            if let Ok(f) = ab_glyph::FontVec::try_from_vec(bytes) {
-                return Some(f);
-            }
+        if let Ok(bytes) = std::fs::read(c)
+            && let Ok(f) = ab_glyph::FontVec::try_from_vec(bytes)
+        {
+            return Some(f);
         }
     }
     if let Ok(out) = std::process::Command::new("fc-match").args(["-f", "%{file}", "sans:bold"]).output() {
@@ -413,9 +418,13 @@ mod tests {
         RgbaImage::from_pixel(30, 30, Rgba([0, 255, 0, 255])).save(&p).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let tx = Mutex::new(tx);
-        let mut st = ImageStore::new(10, 20, Arc::new(move || {
-            let _ = tx.lock().unwrap().send(());
-        }));
+        let mut st = ImageStore::new(
+            10,
+            20,
+            Arc::new(move || {
+                let _ = tx.lock().unwrap().send(());
+            }),
+        );
         st.base_dir = dir.clone();
         // the worker may already be done by the time get() returns
         if matches!(st.get("a.png", 80, 20, None, None), ImgRef::Pending) {

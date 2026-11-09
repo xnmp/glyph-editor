@@ -160,10 +160,10 @@ pub fn load_mono(bold: bool) -> Option<ab_glyph::FontVec> {
         &["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf"]
     };
     for c in cands {
-        if let Ok(b) = std::fs::read(c) {
-            if let Ok(f) = ab_glyph::FontVec::try_from_vec(b) {
-                return Some(f);
-            }
+        if let Ok(b) = std::fs::read(c)
+            && let Ok(f) = ab_glyph::FontVec::try_from_vec(b)
+        {
+            return Some(f);
         }
     }
     None

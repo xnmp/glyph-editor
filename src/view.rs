@@ -82,7 +82,13 @@ impl View {
     /// Content width for a pane of width `w` (readable line length, centered).
     pub fn content_width(&self, w: usize) -> usize {
         let gutter = if self.line_numbers { 6 } else { 0 };
-        let margin = if w > 60 { 4 } else if w > 30 { 2 } else { 1 };
+        let margin = if w > 60 {
+            4
+        } else if w > 30 {
+            2
+        } else {
+            1
+        };
         w.saturating_sub(2 * margin + gutter).min(self.readable).max(8)
     }
 
@@ -93,9 +99,20 @@ impl View {
         self.cx0 = rect.x + gutter + (rect.w.saturating_sub(gutter + self.cw)) / 2;
     }
 
+    fn clamp_top(&mut self, n: usize) {
+        if self.top_line >= n {
+            self.top_line = n.saturating_sub(1);
+            self.top_off = 0;
+        }
+    }
+
     // ------------------------------------------------------------- scrolling
     pub fn scroll(&mut self, env: &Env, ed: &mut Editor, delta: isize) {
         let n = ed.buf.len();
+        self.clamp_top(n);
+        if self.top_off >= line_height(env, ed, self.top_line).max(1) {
+            self.top_off = 0;
+        }
         if delta > 0 {
             let mut left = delta as usize;
             loop {
@@ -181,6 +198,7 @@ impl View {
     }
 
     pub fn ensure_cursor_visible(&mut self, env: &Env, ed: &mut Editor) {
+        self.clamp_top(ed.buf.len());
         let h = self.rect.h as isize;
         if h <= 0 {
             return;
@@ -293,7 +311,18 @@ impl View {
 
     // ------------------------------------------------------------- drawing
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, cv: &mut Canvas, env: &Env, ed: &mut Editor, theme: &Theme, matches: &[(Pos, Pos)], cur_match: Option<usize>, focused: bool, placeholders: bool, cell: (u32, u32)) -> Option<(usize, usize)> {
+    pub fn draw(
+        &mut self,
+        cv: &mut Canvas,
+        env: &Env,
+        ed: &mut Editor,
+        theme: &Theme,
+        matches: &[(Pos, Pos)],
+        cur_match: Option<usize>,
+        focused: bool,
+        placeholders: bool,
+        cell: (u32, u32),
+    ) -> Option<(usize, usize)> {
         let rect = self.rect;
         self.hits.clear();
         let n = ed.buf.len();
@@ -371,10 +400,10 @@ impl View {
                             continue;
                         }
                         let mut st = seg.style;
-                        if let Some(Color::Default) = Some(st.bg) {
-                            if let Some(f) = row.fill {
-                                st.bg = f.bg;
-                            }
+                        if let Some(Color::Default) = Some(st.bg)
+                            && let Some(f) = row.fill
+                        {
+                            st.bg = f.bg;
                         }
                         let x = (self.cx0 + seg.x as usize) as i32;
                         if seg.scale > 1 {
@@ -408,16 +437,18 @@ impl View {
                             paint_range(cv, ma.col, mb.col, bg);
                         }
                     }
-                    if let Some((sa, sb)) = sel {
-                        if sa.line <= i && i <= sb.line && row.kind == RowKind::Text {
-                            let a = if sa.line == i { sa.col } else { 0 };
-                            let b = if sb.line == i { sb.col } else { line.len() };
-                            paint_range(cv, a, b, theme.selection);
-                            // selected newline: show one cell past EOL
-                            if sb.line > i && row.last {
-                                let x = self.cx0 + row.end_x as usize;
-                                cv.restyle(x, sy, 1, |s| s.with_bg(theme.selection));
-                            }
+                    if let Some((sa, sb)) = sel
+                        && sa.line <= i
+                        && i <= sb.line
+                        && row.kind == RowKind::Text
+                    {
+                        let a = if sa.line == i { sa.col } else { 0 };
+                        let b = if sb.line == i { sb.col } else { line.len() };
+                        paint_range(cv, a, b, theme.selection);
+                        // selected newline: show one cell past EOL
+                        if sb.line > i && row.last {
+                            let x = self.cx0 + row.end_x as usize;
+                            cv.restyle(x, sy, 1, |s| s.with_bg(theme.selection));
                         }
                     }
                 }
@@ -443,7 +474,16 @@ impl View {
         }
         if !placeholders {
             for (data, first, count, x, y) in place {
-                cv.placements.push(Placement { id: data.id, x: x as u16, y: y as u16, cols: data.cols, rows: count, src_row: first, cell_w: cell.0, cell_h: cell.1 });
+                cv.placements.push(Placement {
+                    id: data.id,
+                    x: x as u16,
+                    y: y as u16,
+                    cols: data.cols,
+                    rows: count,
+                    src_row: first,
+                    cell_w: cell.0,
+                    cell_h: cell.1,
+                });
             }
         }
         cursor_at

@@ -28,11 +28,7 @@ pub fn transmit_png(out: &mut String, id: u32, png: &[u8], cols: u32, rows: u32,
         let chunk = &data[(k * CHUNK).min(data.len())..((k + 1) * CHUNK).min(data.len())];
         let more = if k + 1 < n { 1 } else { 0 };
         let ctrl = if k == 0 {
-            if virtual_place {
-                format!("a=T,U=1,f=100,t=d,i={id},c={cols},r={rows},q=2,m={more}")
-            } else {
-                format!("a=t,f=100,t=d,i={id},q=2,m={more}")
-            }
+            if virtual_place { format!("a=T,U=1,f=100,t=d,i={id},c={cols},r={rows},q=2,m={more}") } else { format!("a=t,f=100,t=d,i={id},q=2,m={more}") }
         } else {
             format!("m={more},q=2")
         };

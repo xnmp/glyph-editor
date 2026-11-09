@@ -141,13 +141,15 @@ impl Buffer {
         if self.open.is_some() {
             return;
         }
-        if !kind.is_empty() && matches!(kind, "type" | "backspace" | "delete") {
-            if let Some(last) = self.undo.last() {
-                if last.kind == kind && last.t.elapsed().as_secs_f32() < 1.2 && last.sel_after == sel {
-                    self.open = self.undo.pop();
-                    return;
-                }
-            }
+        if !kind.is_empty()
+            && matches!(kind, "type" | "backspace" | "delete")
+            && let Some(last) = self.undo.last()
+            && last.kind == kind
+            && last.t.elapsed().as_secs_f32() < 1.2
+            && last.sel_after == sel
+        {
+            self.open = self.undo.pop();
+            return;
         }
         self.open = Some(Transaction { edits: vec![], sel_before: sel, sel_after: sel, kind, t: Instant::now() });
     }

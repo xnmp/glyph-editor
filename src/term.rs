@@ -294,10 +294,10 @@ pub fn parse_color_reply(s: &str, p: &mut Palette) {
         "10" => p.fg = Some(rgb),
         "11" => p.bg = Some(rgb),
         h if h.starts_with("4;") => {
-            if let Ok(i) = h[2..].parse::<usize>() {
-                if i < 16 {
-                    p.ansi[i] = Some(rgb);
-                }
+            if let Ok(i) = h[2..].parse::<usize>()
+                && i < 16
+            {
+                p.ansi[i] = Some(rgb);
             }
         }
         _ => {}

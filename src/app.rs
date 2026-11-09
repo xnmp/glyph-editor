@@ -148,16 +148,16 @@ impl Config {
     pub fn load() -> Config {
         let mut c = Config::default();
         let dir = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-        if let Some(d) = dir {
-            if let Ok(t) = std::fs::read_to_string(d.join("glyph").join("config")) {
-                for line in t.lines() {
-                    let line = line.trim();
-                    if line.starts_with('#') {
-                        continue;
-                    }
-                    if let Some((k, v)) = line.split_once('=') {
-                        c.set(k.trim(), v.trim().trim_matches('"'));
-                    }
+        if let Some(d) = dir
+            && let Ok(t) = std::fs::read_to_string(d.join("glyph").join("config"))
+        {
+            for line in t.lines() {
+                let line = line.trim();
+                if line.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = line.split_once('=') {
+                    c.set(k.trim(), v.trim().trim_matches('"'));
                 }
             }
         }
@@ -232,6 +232,9 @@ pub struct App {
     pub recent: Vec<PathBuf>,
     last_disk_check: Instant,
     pub theme_idx: usize,
+    /// bumped when notes change on disk (invalidates rendered embeds)
+    pub embed_gen: u64,
+    pub scroll_seen: ((usize, usize, usize), Option<Instant>),
     pub open_url: Box<dyn Fn(&str)>,
     pub system_paste: Box<dyn Fn() -> Option<String>>,
 }
@@ -303,24 +306,49 @@ impl App {
             recent: vec![],
             last_disk_check: Instant::now(),
             theme_idx,
-            open_url: Box::new(|u| open_external(u)),
+            embed_gen: 0,
+            scroll_seen: ((0, 0, 0), None),
+            open_url: Box::new(open_external),
             system_paste: Box::new(system_paste),
         }
     }
 }
 
+/// Relative path from `base` to `p` (both absolute).
+pub fn pathdiff(p: &Path, base: &Path) -> Option<PathBuf> {
+    let pc: Vec<_> = p.components().collect();
+    let bc: Vec<_> = base.components().collect();
+    let common = pc.iter().zip(&bc).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for _ in common..bc.len() {
+        out.push("..");
+    }
+    for c in &pc[common..] {
+        out.push(c);
+    }
+    Some(out)
+}
+
 fn open_external(url: &str) {
     let cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(cmd).arg(url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let _ = std::process::Command::new(cmd)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn system_paste() -> Option<String> {
     let cands: &[(&str, &[&str])] = &[("wl-paste", &["-n"]), ("xclip", &["-o", "-selection", "clipboard"]), ("xsel", &["-ob"]), ("pbpaste", &[])];
     for (c, args) in cands {
-        if let Ok(out) = std::process::Command::new(c).args(*args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() {
-            if out.status.success() {
-                return Some(String::from_utf8_lossy(&out.stdout).to_string());
-            }
+        if let Ok(out) = std::process::Command::new(c).args(*args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output()
+            && out.status.success()
+        {
+            return Some(String::from_utf8_lossy(&out.stdout).to_string());
         }
     }
     None
@@ -349,10 +377,36 @@ impl App {
 
     /// Run `f` with a layout environment and the current tab.
     pub fn with_env<R>(&mut self, f: impl FnOnce(&Env, &mut Tab) -> R) -> R {
-        let App { theme, images, vault, layout, tabs, cur, heading_mode, config, caps, .. } = self;
+        let App { theme, images, vault, layout, tabs, cur, heading_mode, config, caps, embed_gen, .. } = self;
         let tab = &mut tabs[*cur];
         let le = |t: &str| vault.exists(t);
-        let epoch = images.generation();
+        let from = tab.ed.path.clone();
+        let embed = |t: &str, anchor: &str| -> Option<Vec<String>> {
+            let p = vault.resolve(t, from.as_deref())?;
+            if !crate::vault::is_note(&p) {
+                return None;
+            }
+            let text = std::fs::read_to_string(&p).ok()?;
+            let lines: Vec<String> = text.lines().map(String::from).collect();
+            if anchor.is_empty() {
+                return Some(lines);
+            }
+            // a heading section, or a ^block reference
+            if let Some(b) = anchor.strip_prefix('^') {
+                return lines
+                    .iter()
+                    .find(|l| l.trim_end().ends_with(&format!("^{b}")))
+                    .map(|l| vec![l.trim_end().trim_end_matches(&format!("^{b}")).to_string()]);
+            }
+            let doc = md::parse_document(&lines);
+            let heads = md::outline(&lines, &doc);
+            let a = md::slug(anchor);
+            let k = heads.iter().position(|(_, _, h)| md::slug(h) == a)?;
+            let (start, lvl, _) = heads[k];
+            let end = heads[k + 1..].iter().find(|(_, l, _)| *l <= lvl).map_or(lines.len(), |h| h.0);
+            Some(lines[start..end].to_vec())
+        };
+        let epoch = images.generation() + *embed_gen * 7919;
         let env = Env {
             layout,
             ctx: Ctx {
@@ -362,6 +416,7 @@ impl App {
                 heading_mode: *heading_mode,
                 images: if config.images && caps.graphics { Some(images) } else { None },
                 link_exists: &le,
+                embed: &embed,
                 max_image_rows: (tab.view.rect.h.saturating_sub(2) as u32).clamp(4, 40),
                 epoch,
             },
@@ -397,6 +452,12 @@ impl App {
     }
 
     fn after_move(&mut self) {
+        // safety net: every command leaves a valid cursor/anchor
+        {
+            let ed = &mut self.tabs[self.cur].ed;
+            ed.cursor = ed.buf.clamp(ed.cursor);
+            ed.anchor = ed.anchor.map(|a| ed.buf.clamp(a));
+        }
         self.layout_panes();
         self.with_env(|env, tab| tab.view.ensure_cursor_visible(env, &mut tab.ed));
     }
@@ -504,7 +565,8 @@ impl App {
                 let _ = self.tabs[i].ed.save();
             } else {
                 let name = self.tab_name(i);
-                self.overlay = Some(Overlay::Confirm { msg: format!("\"{name}\" has unsaved changes. Save before closing? (y/n/esc)"), kind: ConfirmKind::CloseTab(i) });
+                self.overlay =
+                    Some(Overlay::Confirm { msg: format!("\"{name}\" has unsaved changes. Save before closing? (y/n/esc)"), kind: ConfirmKind::CloseTab(i) });
                 return;
             }
         }
@@ -540,6 +602,7 @@ impl App {
     }
 
     fn vault_changed(&mut self) {
+        self.embed_gen += 1;
         let before = self.vault.notes.len();
         self.vault.rescan();
         self.images.by_name = self.vault.by_name.clone();
@@ -732,11 +795,48 @@ impl App {
             return;
         }
         if let Some(f) = &mut self.find {
-            if f.field == 0 { f.query.insert(t) } else { f.replace.insert(t) }
+            if f.field == 0 {
+                f.query.insert(t)
+            } else {
+                f.replace.insert(t)
+            }
             self.find_refresh();
             return;
         }
         if self.tabs[self.cur].view.mode == Mode::Read {
+            return;
+        }
+        // dropped/pasted file paths (kitty drag & drop pastes paths or file:// URIs)
+        let mut embeds = vec![];
+        for l in t.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let p = l.strip_prefix("file://").unwrap_or(l);
+            let p = crate::editor::percent_decode(p.trim_matches(['\'', '"']));
+            let path = std::path::PathBuf::from(&p);
+            if path.is_absolute() && path.is_file() {
+                embeds.push(path);
+            } else {
+                embeds.clear();
+                break;
+            }
+        }
+        if !embeds.is_empty() {
+            let from = self.tabs[self.cur].ed.path.clone();
+            let base = from.as_ref().and_then(|f| f.parent().map(Path::to_path_buf)).unwrap_or_else(|| self.vault.root.clone());
+            let mut out = vec![];
+            for p in &embeds {
+                let rel = pathdiff(p, &base).unwrap_or_else(|| p.clone());
+                let rel = rel.to_string_lossy().replace(' ', "%20");
+                let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let img = crate::layout::is_image_target(&name);
+                if img {
+                    out.push(format!("![{}]({rel})", p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
+                } else {
+                    out.push(format!("[{name}]({rel})"));
+                }
+            }
+            let s = out.join("\n");
+            self.ed().paste(&s);
+            self.after_edit();
             return;
         }
         self.ed().paste(t);
@@ -1070,10 +1170,10 @@ impl App {
                 if let Some((_, p, d)) = items.get(self.tree_sel).cloned() {
                     if d && self.tree_open.contains(&p) {
                         self.tree_open.remove(&p);
-                    } else if let Some(parent) = p.parent() {
-                        if let Some(i) = items.iter().position(|x| x.1 == parent) {
-                            self.tree_sel = i;
-                        }
+                    } else if let Some(parent) = p.parent()
+                        && let Some(i) = items.iter().position(|x| x.1 == parent)
+                    {
+                        self.tree_sel = i;
                     }
                 }
             }
@@ -1094,10 +1194,11 @@ impl App {
 
     pub fn current_backlinks(&mut self) -> Vec<(PathBuf, usize, String)> {
         let Some(p) = self.tabs[self.cur].ed.path.clone() else { return vec![] };
-        if let Some((bp, t, v)) = &self.backlinks {
-            if *bp == p && t.elapsed() < Duration::from_secs(5) {
-                return v.clone();
-            }
+        if let Some((bp, t, v)) = &self.backlinks
+            && *bp == p
+            && t.elapsed() < Duration::from_secs(5)
+        {
+            return v.clone();
         }
         let v = self.vault.backlinks(&p);
         self.backlinks = Some((p, Instant::now(), v.clone()));
@@ -1431,10 +1532,8 @@ impl App {
                 }
                 out.push_str(&line[last..]);
             }
-            if n > 0 {
-                if std::fs::write(&abs, out).is_ok() {
-                    changed += n;
-                }
+            if n > 0 && std::fs::write(&abs, out).is_ok() {
+                changed += n;
             }
         }
         for t in &mut self.tabs {
@@ -1459,7 +1558,40 @@ impl App {
         let read = self.tabs.get(self.cur).is_some_and(|t| t.view.mode == Mode::Read);
         let editing = matches!(
             cmd,
-            Undo | Redo | Cut | Paste | Bold | Italic | Strike | Highlight | InlineCode | Link | WikiLink | ToggleTask | Paragraph | H1 | H2 | H3 | H4 | H5 | H6 | CycleHeading | Quote | BulletList | NumberedList | CodeBlock | InsertTable | InsertHr | MoveLineUp | MoveLineDown | Duplicate | DeleteLine | JoinLines | Indent | Outdent | FormatTable | Replace
+            Undo | Redo
+                | Cut
+                | Paste
+                | Bold
+                | Italic
+                | Strike
+                | Highlight
+                | InlineCode
+                | Link
+                | WikiLink
+                | ToggleTask
+                | Paragraph
+                | H1
+                | H2
+                | H3
+                | H4
+                | H5
+                | H6
+                | CycleHeading
+                | Quote
+                | BulletList
+                | NumberedList
+                | CodeBlock
+                | InsertTable
+                | InsertHr
+                | MoveLineUp
+                | MoveLineDown
+                | Duplicate
+                | DeleteLine
+                | JoinLines
+                | Indent
+                | Outdent
+                | FormatTable
+                | Replace
         );
         if editing && read {
             self.set_status("Reading view — press Ctrl+E to edit");
@@ -1801,7 +1933,13 @@ impl App {
             return;
         }
         if m.kind == MouseKind::Wheel {
-            let d: isize = if m.button == 0 { -3 } else if m.button == 1 { 3 } else { 0 };
+            let d: isize = if m.button == 0 {
+                -3
+            } else if m.button == 1 {
+                3
+            } else {
+                0
+            };
             if self.left_rect.contains(x, y) {
                 let n = self.tree_items().len();
                 self.tree_scroll = (self.tree_scroll as isize + d).clamp(0, n.saturating_sub(1) as isize) as usize;
@@ -1880,12 +2018,15 @@ impl App {
                 // checkbox toggle
                 if count == 1 && m.mods == 0 {
                     let info = self.ed().doc().infos[p.line].clone();
-                    if let Some(lm) = info.lst {
-                        if lm.task.is_some() && p.col >= lm.task_start && p.col < lm.task_start + 3 && self.ed().cursor.line != p.line {
-                            self.ed().toggle_task_at(p.line);
-                            self.after_edit();
-                            return;
-                        }
+                    if let Some(lm) = info.lst
+                        && lm.task.is_some()
+                        && p.col >= lm.task_start
+                        && p.col < lm.task_start + 3
+                        && self.ed().cursor.line != p.line
+                    {
+                        self.ed().toggle_task_at(p.line);
+                        self.after_edit();
+                        return;
                     }
                 }
                 self.completion = None;
@@ -1972,25 +2113,31 @@ impl App {
                 want(left);
             }
         }
-        if self.config.autosave {
-            if let Some(t) = self.last_edit {
-                let wait = Duration::from_millis(1200);
-                if t.elapsed() >= wait {
-                    self.last_edit = None;
-                    let mut saved = false;
-                    for tab in &mut self.tabs {
-                        if tab.ed.dirty() && tab.ed.path.is_some() {
-                            if tab.ed.save().is_ok() {
-                                saved = true;
-                            }
-                        }
+        if self.config.autosave
+            && let Some(t) = self.last_edit
+        {
+            let wait = Duration::from_millis(1200);
+            if t.elapsed() >= wait {
+                self.last_edit = None;
+                let mut saved = false;
+                for tab in &mut self.tabs {
+                    if tab.ed.dirty() && tab.ed.path.is_some() && tab.ed.save().is_ok() {
+                        saved = true;
                     }
-                    if saved {
-                        self.vault_changed();
-                    }
-                } else {
-                    want(wait - t.elapsed());
                 }
+                if saved {
+                    self.vault_changed();
+                }
+            } else {
+                want(wait - t.elapsed());
+            }
+        }
+        if let Some(t) = self.scroll_seen.1 {
+            let left = Duration::from_millis(1250).saturating_sub(t.elapsed());
+            if left.is_zero() {
+                self.scroll_seen.1 = None;
+            } else {
+                want(left);
             }
         }
         if self.last_disk_check.elapsed() > Duration::from_secs(2) {

@@ -74,6 +74,8 @@ pub struct ImageData {
 pub struct Canvas {
     pub w: usize,
     pub h: usize,
+    /// theme defaults: unset fg/bg in written styles inherit these / the cell's bg
+    pub base: Style,
     pub cells: Vec<Cell>,
     pub placements: Vec<Placement>,
     pub images: Vec<Arc<ImageData>>,
@@ -88,6 +90,7 @@ impl Canvas {
         Canvas {
             w,
             h,
+            base: bg,
             cells: vec![Cell::blank(bg); w * h],
             placements: vec![],
             images: vec![],
@@ -113,6 +116,18 @@ impl Canvas {
         }
         self.links.push(url.to_string());
         (self.links.len() - 1) as u32
+    }
+
+    #[inline]
+    fn inherit(&self, style: Style, x: usize, y: usize) -> Style {
+        let mut s = style;
+        if !s.bg.is_set() {
+            s.bg = self.cells[y * self.w + x].style.bg;
+        }
+        if !s.fg.is_set() {
+            s.fg = self.base.fg;
+        }
+        s
     }
 
     /// Write text at (x, y), clipped to [clip0, clip1). Returns x after text.
@@ -141,15 +156,17 @@ impl Canvas {
             }
             if x + cw > limit {
                 if cw == 2 && x < limit {
-                    *self.at_mut(x as usize, y) = Cell::blank(style);
+                    let st = self.inherit(style, x as usize, y);
+                    *self.at_mut(x as usize, y) = Cell::blank(st);
                 }
                 return x + cw;
             }
+            let st = self.inherit(style, x as usize, y);
             let c = self.at_mut(x as usize, y);
-            *c = Cell::new(g, style);
+            *c = Cell::new(g, st);
             if cw == 2 {
                 let t = self.at_mut(x as usize + 1, y);
-                *t = Cell::blank(style);
+                *t = Cell::blank(st);
                 t.flag = WIDE_TAIL;
                 t.len = 0;
             }
@@ -168,6 +185,7 @@ impl Canvas {
                 x += cw;
                 continue;
             }
+            let style = self.inherit(style, x as usize, y as usize);
             for dy in 0..s {
                 for dx in 0..cw {
                     let c = self.at_mut((x + dx) as usize, (y + dy) as usize);
@@ -187,7 +205,8 @@ impl Canvas {
     pub fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, style: Style) {
         for yy in y..(y + h).min(self.h) {
             for xx in x..(x + w).min(self.w) {
-                *self.at_mut(xx, yy) = Cell::blank(style);
+                let st = self.inherit(style, xx, yy);
+                *self.at_mut(xx, yy) = Cell::blank(st);
             }
         }
     }

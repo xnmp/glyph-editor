@@ -96,6 +96,8 @@ pub struct Ctx<'a> {
     pub heading_mode: HeadingMode,
     pub images: Option<&'a ImageStore>,
     pub link_exists: &'a dyn Fn(&str) -> bool,
+    /// lines of an embedded note (target, heading anchor), for `![[note]]`
+    pub embed: &'a dyn Fn(&str, &str) -> Option<Vec<String>>,
     pub max_image_rows: u32,
     pub epoch: u64,
 }
@@ -212,13 +214,16 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
                     segs.push(Seg { x: x as u16, w, text: " ".repeat(at.w as usize), style: at.style, a: at.a, b: at.b, src: true, run: false, scale });
                     continue;
                 }
-                if let Some(last) = segs.last_mut() {
-                    if last.run && last.style == at.style && last.b == at.a && (last.x + last.w) as i64 == x {
-                        last.b = at.b;
-                        last.w += w;
-                        last.text.push_str(&line[at.a..at.b]);
-                        continue;
-                    }
+                if let Some(last) = segs.last_mut()
+                    && last.run
+                    && last.style == at.style
+                    && last.b == at.a
+                    && (last.x + last.w) as i64 == x
+                {
+                    last.b = at.b;
+                    last.w += w;
+                    last.text.push_str(&line[at.a..at.b]);
+                    continue;
                 }
                 segs.push(Seg { x: x as u16, w, text: line[at.a..at.b].to_string(), style: at.style, a: at.a, b: at.b, src: true, run: true, scale });
             }
@@ -450,7 +455,12 @@ impl Layout {
                     } else if !rev && sp.kind == SpanKind::Embed {
                         hide(&mut hidden, sp.start, sp.end);
                         let st = if (ctx.link_exists)(&sp.target) { th.link_style() } else { th.unresolved_style() };
-                        repl.push((sp.start, sp.end, format!("⧉ {}", if sp.anchor.is_empty() { sp.target.clone() } else { format!("{} › {}", sp.target, sp.anchor) }), st));
+                        repl.push((
+                            sp.start,
+                            sp.end,
+                            format!("↳ {}", if sp.anchor.is_empty() { sp.target.clone() } else { format!("{} › {}", sp.target, sp.anchor) }),
+                            st,
+                        ));
                     } else {
                         paint(&mut styles, sp.start, sp.end, Style::fg(th.muted));
                         paint(&mut styles, sp.start, sp.start + if sp.kind == SpanKind::Embed { 3 } else { 2 }, marker);
@@ -526,7 +536,22 @@ impl Layout {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn rows_from(&self, ctx: &Ctx, text: &str, atoms: &[Atom], prefix: Vec<Seg>, cont_prefix: &[Seg], a: usize, b: usize, x0: Option<usize>, cont_x: Option<usize>, scale: u8, fill: Option<Style>, char_wrap: bool, width: usize) -> Vec<VRow> {
+    fn rows_from(
+        &self,
+        ctx: &Ctx,
+        text: &str,
+        atoms: &[Atom],
+        prefix: Vec<Seg>,
+        cont_prefix: &[Seg],
+        a: usize,
+        b: usize,
+        x0: Option<usize>,
+        cont_x: Option<usize>,
+        scale: u8,
+        fill: Option<Style>,
+        char_wrap: bool,
+        width: usize,
+    ) -> Vec<VRow> {
         let px = x0.unwrap_or_else(|| prefix.iter().map(|s| (s.x + s.w) as usize).max().unwrap_or(0));
         let cx = cont_x.unwrap_or(px);
         let wrapped = wrap_atoms(text, atoms, width, px, cx, scale, char_wrap);
@@ -564,9 +589,8 @@ impl Layout {
             return self.source_line(ctx, lines, doc, i, reveal);
         }
         let active_line = reveal.is_some();
-        match info.kind {
-            LineKind::Blank => return vec![VRow::new(0, text.len())],
-            _ => {}
+        if info.kind == LineKind::Blank {
+            return vec![VRow::new(0, text.len())];
         }
         if let Some(b) = blk {
             match b.kind {
@@ -599,7 +623,8 @@ impl Layout {
                     return self.rows_from(ctx, text, &atoms, vec![], &[], 0, text.len(), None, None, 1, None, false, w);
                 }
                 let mut r = VRow::new(0, text.len());
-                r.segs.push(Seg { x: 0, w: w as u16, text: "─".repeat(w), style: Style::fg(th.border), a: 0, b: text.len(), src: true, run: false, scale: 1 });
+                r.segs
+                    .push(Seg { x: 0, w: w as u16, text: "─".repeat(w), style: Style::fg(th.border), a: 0, b: text.len(), src: true, run: false, scale: 1 });
                 r.end_x = 0;
                 return vec![r];
             }
@@ -621,8 +646,28 @@ impl Layout {
         let mut fill = None;
         let mut base = Style::new();
         let mut callout_col = None;
-        let src_seg = |x: usize, w: usize, t: &str, st: Style, a: usize, b: usize| Seg { x: x as u16, w: w as u16, text: t.to_string(), style: st, a, b, src: true, run: false, scale: 1 };
-        let deco_seg = |x: usize, w: usize, t: &str, st: Style| Seg { x: x as u16, w: w as u16, text: t.to_string(), style: st, a: 0, b: 0, src: false, run: false, scale: 1 };
+        let src_seg = |x: usize, w: usize, t: &str, st: Style, a: usize, b: usize| Seg {
+            x: x as u16,
+            w: w as u16,
+            text: t.to_string(),
+            style: st,
+            a,
+            b,
+            src: true,
+            run: false,
+            scale: 1,
+        };
+        let deco_seg = |x: usize, w: usize, t: &str, st: Style| Seg {
+            x: x as u16,
+            w: w as u16,
+            text: t.to_string(),
+            style: st,
+            a: 0,
+            b: 0,
+            src: false,
+            run: false,
+            scale: 1,
+        };
 
         // quote / callout gutter
         if info.quote_depth > 0 {
@@ -648,35 +693,42 @@ impl Layout {
             }
             cont_prefix = prefix
                 .iter()
-                .map(|s| deco_seg(s.x as usize, s.w as usize, if s.text == ">" || s.text == "▍" || s.text == "▌" { if callout_col.is_some() { "▌" } else { "▍" } } else { " " }, bar))
+                .map(|s| {
+                    deco_seg(
+                        s.x as usize,
+                        s.w as usize,
+                        if s.text == ">" || s.text == "▍" || s.text == "▌" { if callout_col.is_some() { "▌" } else { "▍" } } else { " " },
+                        bar,
+                    )
+                })
                 .collect();
         }
 
         // callout header
-        if info.kind == LineKind::CalloutHead {
-            if let Some(co) = &info.callout {
-                let col = callout_col.unwrap_or(th.accent);
-                let title_st = Style::fg(col).bold();
-                let revealed = active_line && reveal.is_some_and(|r| r <= co.marker_end);
-                let mut atoms: Vec<Atom> = vec![];
-                if revealed {
-                    atoms.extend(self.raw_atoms(text, co.marker_start, co.marker_end, th.marker()));
-                } else {
-                    let mut label = format!("{} ", callout_icon(&co.kind));
-                    if co.title.is_empty() {
-                        let mut c = co.kind.chars();
-                        label.push_str(&c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default());
-                    }
-                    atoms.push(Atom::repl(co.marker_start, co.marker_end, label, title_st));
+        if info.kind == LineKind::CalloutHead
+            && let Some(co) = &info.callout
+        {
+            let col = callout_col.unwrap_or(th.accent);
+            let title_st = Style::fg(col).bold();
+            let revealed = active_line && reveal.is_some_and(|r| r <= co.marker_end);
+            let mut atoms: Vec<Atom> = vec![];
+            if revealed {
+                atoms.extend(self.raw_atoms(text, co.marker_start, co.marker_end, th.marker()));
+            } else {
+                let mut label = format!("{} ", callout_icon(&co.kind));
+                if co.title.is_empty() {
+                    let mut c = co.kind.chars();
+                    label.push_str(&c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default());
                 }
-                let (t, _) = self.inline_atoms(ctx, text, co.marker_end, text.len(), title_st, reveal, false);
-                atoms.extend(t);
-                if co.fold != 0 && !revealed {
-                    let open = block_active || co.fold == b'+';
-                    atoms.push(Atom::repl(text.len(), text.len(), if open { "  ▾".into() } else { "  ▸".into() }, Style::fg(th.muted)));
-                }
-                return self.rows_from(ctx, text, &atoms, prefix, &cont_prefix, info.quote_end, text.len(), None, None, 1, fill, false, ctx.width);
+                atoms.push(Atom::repl(co.marker_start, co.marker_end, label, title_st));
             }
+            let (t, _) = self.inline_atoms(ctx, text, co.marker_end, text.len(), title_st, reveal, false);
+            atoms.extend(t);
+            if co.fold != 0 && !revealed {
+                let open = block_active || co.fold == b'+';
+                atoms.push(Atom::repl(text.len(), text.len(), if open { "  ▾".into() } else { "  ▸".into() }, Style::fg(th.muted)));
+            }
+            return self.rows_from(ctx, text, &atoms, prefix, &cont_prefix, info.quote_end, text.len(), None, None, 1, fill, false, ctx.width);
         }
 
         // list markers, indentation
@@ -684,7 +736,7 @@ impl Layout {
         if let Some(lm) = &info.lst {
             let depth = lm.depth;
             let ind = crate::text::indent_width(&text[info.quote_end..lm.start]);
-            let step = if depth > 0 { (ind / depth).max(1) } else { 0 };
+            let step = ind.checked_div(depth).map_or(0, |s| s.max(1));
             let guides: Vec<usize> = (0..depth).map(|d| x + step * d).collect();
             let gx0 = x;
             for (k, ch) in text[info.quote_end..lm.start].char_indices() {
@@ -764,22 +816,30 @@ impl Layout {
         if is_heading {
             let hst = th.heading_style(info.level);
             base = base.over(hst);
-            if big && ctx.heading_mode == HeadingMode::Image && !active_line {
-                if let (Some(imgs), Some((r, g, b))) = (ctx.images, hst.fg.rgb().or(th.canvas.rgb().map(|_| (0, 0, 0))).or(Some((200, 200, 200)))) {
-                    let plain = if info.setext { md::inline_text(text) } else { md::inline_text(text[info.content..].trim_end().trim_end_matches('#').trim_end()) };
-                    let col = if hst.fg.rgb().is_some() { (r, g, b) } else if th.dark { (230, 230, 230) } else { (20, 20, 20) };
-                    if let ImgRef::Ready(img) = imgs.heading(&plain, info.level, (ctx.width.saturating_sub(x)) as u32, col) {
-                        let mut out = vec![];
-                        for r in 0..img.data.rows {
-                            let mut row = VRow::new(0, text.len());
-                            row.kind = RowKind::Image;
-                            row.cursorable = r == 0;
-                            row.image = Some((img.clone(), r, x as u16));
-                            row.end_x = x as u16;
-                            out.push(row);
-                        }
-                        return out;
+            if big
+                && ctx.heading_mode == HeadingMode::Image
+                && !active_line
+                && let (Some(imgs), Some((r, g, b))) = (ctx.images, hst.fg.rgb().or(th.canvas.rgb().map(|_| (0, 0, 0))).or(Some((200, 200, 200))))
+            {
+                let plain = if info.setext { md::inline_text(text) } else { md::inline_text(text[info.content..].trim_end().trim_end_matches('#').trim_end()) };
+                let col = if hst.fg.rgb().is_some() {
+                    (r, g, b)
+                } else if th.dark {
+                    (230, 230, 230)
+                } else {
+                    (20, 20, 20)
+                };
+                if let ImgRef::Ready(img) = imgs.heading(&plain, info.level, (ctx.width.saturating_sub(x)) as u32, col) {
+                    let mut out = vec![];
+                    for r in 0..img.data.rows {
+                        let mut row = VRow::new(0, text.len());
+                        row.kind = RowKind::Image;
+                        row.cursorable = r == 0;
+                        row.image = Some((img.clone(), r, x as u16));
+                        row.end_x = x as u16;
+                        out.push(row);
                     }
+                    return out;
                 }
             }
             if big && ctx.heading_mode == HeadingMode::Osc66 {
@@ -814,17 +874,169 @@ impl Layout {
             atoms.push(Atom::hidden(end, text.len()));
         }
         let cont_x = prefix.iter().map(|s| (s.x + s.w) as usize).max().unwrap_or(0);
-        let mut rows = self.rows_from(ctx, text, &atoms, prefix, &cont_prefix, 0, text.len(), None, Some(if is_heading { 0 } else { cont_x }), scale, fill, false, ctx.width);
+        let mut rows = self.rows_from(
+            ctx,
+            text,
+            &atoms,
+            prefix,
+            &cont_prefix,
+            0,
+            text.len(),
+            None,
+            Some(if is_heading { 0 } else { cont_x }),
+            scale,
+            fill,
+            false,
+            ctx.width,
+        );
         if big && ctx.heading_mode == HeadingMode::Image {
             rows.push(VRow::deco());
         }
         if is_heading && info.level == 1 && ctx.heading_mode == HeadingMode::Plain && info.quote_depth == 0 {
             let mut r = VRow::deco();
-            r.segs.push(Seg { x: 0, w: ctx.width as u16, text: "━".repeat(ctx.width), style: Style::fg(th.border), a: 0, b: 0, src: false, run: false, scale: 1 });
+            r.segs.push(Seg {
+                x: 0,
+                w: ctx.width as u16,
+                text: "━".repeat(ctx.width),
+                style: Style::fg(th.border),
+                a: 0,
+                b: 0,
+                src: false,
+                run: false,
+                scale: 1,
+            });
             rows.push(r);
         }
         let img_x = if info.lst.is_some() || info.quote_depth > 0 { cont_x } else { 0 };
-        self.attach_images(ctx, text, &spans, rows, reveal, img_x)
+        let rows = self.attach_images(ctx, text, &spans, rows, reveal, img_x);
+        self.attach_embeds(ctx, text, &spans, rows, reveal, img_x)
+    }
+
+    /// `![[note]]` / `![[note#section]]`: show the embedded note in a panel.
+    fn attach_embeds(&self, ctx: &Ctx, text: &str, spans: &[Span], mut rows: Vec<VRow>, reveal: Option<usize>, px: usize) -> Vec<VRow> {
+        let th = ctx.theme;
+        let embeds: Vec<&Span> = spans.iter().filter(|s| s.kind == SpanKind::Embed && !is_image_target(&s.target)).collect();
+        if embeds.is_empty() || ctx.mode == Mode::Source {
+            return rows;
+        }
+        let width = ctx.width.saturating_sub(px + 2).max(4);
+        // an embed alone on its line replaces the line (like images)
+        let mut rest = text.to_string();
+        for s in &embeds {
+            rest.replace_range(s.start..s.end, &" ".repeat(s.end - s.start));
+        }
+        let revealed = embeds.iter().any(|s| reveal.is_some_and(|r| s.start <= r && r <= s.end));
+        let mut first_cursorable = false;
+        if rest.trim().is_empty() && !revealed {
+            rows.retain(|r| r.kind == RowKind::Image);
+            first_cursorable = rows.is_empty();
+        }
+        let fill = Some(Style::bg(th.sidebar));
+        let bar = Style::fg(th.accent);
+        let deco = |x: usize, t: &str, st: Style| Seg {
+            x: x as u16,
+            w: str_width(t) as u16,
+            text: t.to_string(),
+            style: st,
+            a: 0,
+            b: 0,
+            src: false,
+            run: false,
+            scale: 1,
+        };
+        for s in embeds {
+            let _ = reveal;
+            let Some(lines) = (ctx.embed)(&s.target, &s.anchor) else { continue };
+            let sub_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            let doc = md::parse_document(&sub_lines);
+            let mut body: Vec<(String, Style)> = vec![];
+            for (i, l) in sub_lines.iter().enumerate() {
+                let info = &doc.infos[i];
+                let (t, st) = match info.kind {
+                    LineKind::Front | LineKind::FrontFence => continue,
+                    LineKind::Heading => (md::inline_text(l[info.content..].trim_end_matches('#')), th.heading_style(info.level)),
+                    LineKind::Fence => continue,
+                    LineKind::Code => (l.to_string(), Style::fg(th.code_fg)),
+                    LineKind::Blank => (String::new(), Style::new()),
+                    _ => match &info.lst {
+                        Some(lm) => {
+                            let mark = match lm.task {
+                                Some(' ') => "☐ ",
+                                Some(_) => "☑ ",
+                                None if lm.ordered => "",
+                                None => "• ",
+                            };
+                            let pre = if lm.ordered { &l[lm.start..lm.end] } else { "" };
+                            (format!("{}{mark}{pre}{}", "  ".repeat(lm.depth), md::inline_text(&l[lm.end..])), Style::new())
+                        }
+                        None => (md::inline_text(&l[info.content.min(l.len())..]), Style::new()),
+                    },
+                };
+                body.push((t, st));
+            }
+            while body.last().is_some_and(|b| b.0.is_empty()) {
+                body.pop();
+            }
+            while body.first().is_some_and(|b| b.0.is_empty()) {
+                body.remove(0);
+            }
+            let title = if s.anchor.is_empty() { s.target.clone() } else { format!("{} › {}", s.target, s.anchor) };
+            // the embedded note's own title heading would just repeat the header
+            let last_part = title.rsplit(" › ").next().unwrap_or(&title).to_string();
+            if body.first().is_some_and(|b| b.0.eq_ignore_ascii_case(&last_part) || b.0.eq_ignore_ascii_case(&s.target)) {
+                body.remove(0);
+                while body.first().is_some_and(|b| b.0.is_empty()) {
+                    body.remove(0);
+                }
+            }
+            let mut head = VRow::new(0, text.len());
+            head.kind = if first_cursorable { RowKind::Text } else { RowKind::Deco };
+            head.cursorable = first_cursorable;
+            first_cursorable = false;
+            head.fill = fill;
+            head.segs.push(deco(px, "▍", bar));
+            head.segs.push(deco(px + 2, &format!("↳ {title}"), Style::fg(th.muted).bold()));
+            rows.push(head);
+            let max_rows = 14usize;
+            let mut emitted = 0;
+            'outer: for (t, st) in &body {
+                // simple word wrap
+                let mut cur = String::new();
+                let mut chunks = vec![];
+                for word in t.split(' ') {
+                    if !cur.is_empty() && str_width(&cur) + 1 + str_width(word) > width {
+                        chunks.push(std::mem::take(&mut cur));
+                    }
+                    if !cur.is_empty() {
+                        cur.push(' ');
+                    }
+                    cur.push_str(word);
+                }
+                chunks.push(cur);
+                for c in chunks {
+                    if emitted >= max_rows {
+                        let mut r = VRow::new(text.len(), text.len());
+                        r.kind = RowKind::Deco;
+                        r.cursorable = false;
+                        r.fill = fill;
+                        r.segs.push(deco(px, "▍", bar));
+                        r.segs.push(deco(px + 2, "…", Style::fg(th.faint)));
+                        rows.push(r);
+                        break 'outer;
+                    }
+                    let mut r = VRow::new(text.len(), text.len());
+                    r.kind = RowKind::Deco;
+                    r.cursorable = false;
+                    r.fill = fill;
+                    r.segs.push(deco(px, "▍", bar));
+                    let c = crate::text::truncate(&c, width);
+                    r.segs.push(deco(px + 2, &c, *st));
+                    rows.push(r);
+                    emitted += 1;
+                }
+            }
+        }
+        rows
     }
 
     fn attach_images(&self, ctx: &Ctx, text: &str, spans: &[Span], rows: Vec<VRow>, reveal: Option<usize>, px: usize) -> Vec<VRow> {
@@ -840,7 +1052,11 @@ impl Layout {
         }
         let revealed = imgs.iter().any(|s| reveal.is_some_and(|r| s.start <= r && r <= s.end));
         let image_only = rest.trim().is_empty() || rest.trim_start().starts_with(['-', '*', '>']) && rest.trim().len() <= 2;
-        let mut out: Vec<VRow> = if image_only && !revealed { rows.iter().filter(|r| r.kind != RowKind::Text || r.segs.iter().any(|s| !s.src)).take(0).cloned().collect() } else { rows };
+        let mut out: Vec<VRow> = if image_only && !revealed {
+            rows.iter().filter(|r| r.kind != RowKind::Text || r.segs.iter().any(|s| !s.src)).take(0).cloned().collect()
+        } else {
+            rows
+        };
         let maxc = ctx.width.saturating_sub(px).max(1) as u32;
         for s in imgs {
             let r = store.get(&s.target, maxc, ctx.max_image_rows, s.width, s.height);
@@ -868,7 +1084,17 @@ impl Layout {
                     if !row.cursorable {
                         row.kind = RowKind::Deco;
                     }
-                    row.segs.push(Seg { x: px as u16, w: str_width(&label) as u16, text: label, style: Style::fg(th.faint).italic(), a: 0, b: 0, src: false, run: false, scale: 1 });
+                    row.segs.push(Seg {
+                        x: px as u16,
+                        w: str_width(&label) as u16,
+                        text: label,
+                        style: Style::fg(th.faint).italic(),
+                        a: 0,
+                        b: 0,
+                        src: false,
+                        run: false,
+                        scale: 1,
+                    });
                     row.end_x = px as u16;
                     out.push(row);
                 }
@@ -912,7 +1138,17 @@ impl Layout {
             r.segs.push(Seg { x: 1, w: 0, text: String::new(), style: Style::new(), a: 0, b: text.len(), src: true, run: false, scale: 1 });
             if is_open && !b.lang.is_empty() {
                 let lw = str_width(&b.lang);
-                r.segs.push(Seg { x: w.saturating_sub(lw + 1) as u16, w: lw as u16, text: b.lang.clone(), style: Style::fg(th.faint), a: 0, b: 0, src: false, run: false, scale: 1 });
+                r.segs.push(Seg {
+                    x: w.saturating_sub(lw + 1) as u16,
+                    w: lw as u16,
+                    text: b.lang.clone(),
+                    style: Style::fg(th.faint),
+                    a: 0,
+                    b: 0,
+                    src: false,
+                    run: false,
+                    scale: 1,
+                });
             }
             r.fill = fill;
             r.end_x = 1;
@@ -1026,14 +1262,25 @@ impl Layout {
         r.fill = fill;
         if i == b.start {
             let lab = " ⚙ Properties";
-            r.segs.push(Seg { x: 0, w: str_width(lab) as u16, text: lab.into(), style: Style::fg(th.muted).bold(), a: 0, b: text.len(), src: true, run: false, scale: 1 });
+            r.segs.push(Seg {
+                x: 0,
+                w: str_width(lab) as u16,
+                text: lab.into(),
+                style: Style::fg(th.muted).bold(),
+                a: 0,
+                b: text.len(),
+                src: true,
+                run: false,
+                scale: 1,
+            });
             return vec![r];
         }
         if i == b.end - 1 {
             r.segs.push(Seg { x: 0, w: 0, text: String::new(), style: Style::new(), a: 0, b: text.len(), src: true, run: false, scale: 1 });
             return vec![r];
         }
-        let kw = lines[b.start + 1..b.end - 1].iter().filter(|l| is_key(l)).map(|l| str_width(l.split(':').next().unwrap().trim())).max().unwrap_or(4).min(18) + 3;
+        let kw =
+            lines[b.start + 1..b.end - 1].iter().filter(|l| is_key(l)).map(|l| str_width(l.split(':').next().unwrap().trim())).max().unwrap_or(4).min(18) + 3;
         if is_key(text) {
             let colon = text.find(':').unwrap();
             let key = text[..colon].trim();
@@ -1098,9 +1345,11 @@ impl Layout {
             }
             let text = &lines[ln];
             let base = if ln == b.start { Style::new().bold() } else { Style::new() };
-            let mut row: Vec<Vec<Atom>> = md::split_table_row(text).into_iter().take(ncols).map(|(a, e)| self.inline_atoms(ctx, text, a, e, base, None, false).0).collect();
+            let mut row: Vec<Vec<Atom>> =
+                md::split_table_row(text).into_iter().take(ncols).map(|(a, e)| self.inline_atoms(ctx, text, a, e, base, None, false).0).collect();
             row.resize(ncols, vec![]);
-            cells.insert(ln, row);
+            // keyed by row offset: the model is shared by identical tables anywhere
+            cells.insert(ln - b.start, row);
         }
         let mut natural = vec![1usize; ncols];
         for row in cells.values() {
@@ -1154,7 +1403,7 @@ impl Layout {
             out.push(r);
         }
         let empty = vec![];
-        let row_cells = m.cells.get(&i).unwrap_or(&empty);
+        let row_cells = m.cells.get(&(i - b.start)).unwrap_or(&empty);
         let wrapped: Vec<Vec<Vec<Seg>>> = row_cells.iter().enumerate().map(|(c, at)| wrap_atoms(text, at, m.widths[c], 0, 0, 1, false)).collect();
         let h = wrapped.iter().map(|w| w.len()).max().unwrap_or(1).max(1);
         for r in 0..h {
@@ -1203,10 +1452,10 @@ impl Layout {
         let th = ctx.theme;
         let info = &doc.infos[i];
         let text = lines[i].as_str();
-        if let Some(b) = info.block.map(|b| &doc.blocks[b]) {
-            if b.kind == BlockKind::Code {
-                return self.code_line(ctx, lines, doc, i, b, true);
-            }
+        if let Some(b) = info.block.map(|b| &doc.blocks[b])
+            && b.kind == BlockKind::Code
+        {
+            return self.code_line(ctx, lines, doc, i, b, true);
         }
         let st = match info.kind {
             LineKind::Front | LineKind::FrontFence => Some(Style::fg(th.muted)),
@@ -1220,7 +1469,11 @@ impl Layout {
             return self.rows_from(ctx, text, &atoms, vec![], &[], 0, text.len(), None, None, 1, None, false, ctx.width);
         }
         let base = if info.kind == LineKind::Heading { th.heading_style(info.level) } else { Style::new() };
-        let pre_st = if info.lst.is_some() { Style::fg(th.accent) } else { th.marker().over(if info.kind == LineKind::Heading { Style::new().bold() } else { Style::new() }) };
+        let pre_st = if info.lst.is_some() {
+            Style::fg(th.accent)
+        } else {
+            th.marker().over(if info.kind == LineKind::Heading { Style::new().bold() } else { Style::new() })
+        };
         let mut atoms = self.raw_atoms(text, 0, info.content, pre_st);
         let cont: usize = if info.lst.is_some() { atoms.iter().map(|a| a.w as usize).sum() } else { 0 };
         atoms.extend(self.inline_atoms(ctx, text, info.content, text.len(), base, reveal, true).0);
@@ -1312,7 +1565,17 @@ mod tests {
         let (lines, d) = setup(src);
         let th = Theme::ansi();
         let le = |_: &str| true;
-        let ctx = Ctx { theme: &th, width, mode: Mode::Live, heading_mode: HeadingMode::Plain, images: None, link_exists: &le, max_image_rows: 10, epoch: 0 };
+        let ctx = Ctx {
+            theme: &th,
+            width,
+            mode: Mode::Live,
+            heading_mode: HeadingMode::Plain,
+            images: None,
+            link_exists: &le,
+            embed: &|_: &str, _: &str| None,
+            max_image_rows: 10,
+            epoch: 0,
+        };
         let l = Layout::new();
         let active_block = cursor.and_then(|(ln, _)| d.infos[ln].block);
         let mut out = vec![];
@@ -1378,7 +1641,17 @@ mod tests {
         let (lines, d) = setup("hello **wörld** 日本 end");
         let th = Theme::ansi();
         let le = |_: &str| true;
-        let ctx = Ctx { theme: &th, width: 80, mode: Mode::Live, heading_mode: HeadingMode::Plain, images: None, link_exists: &le, max_image_rows: 10, epoch: 0 };
+        let ctx = Ctx {
+            theme: &th,
+            width: 80,
+            mode: Mode::Live,
+            heading_mode: HeadingMode::Plain,
+            images: None,
+            link_exists: &le,
+            embed: &|_: &str, _: &str| None,
+            max_image_rows: 10,
+            epoch: 0,
+        };
         let l = Layout::new();
         let rows = l.rows(&ctx, &lines, &d, 0, None, false);
         let row = &rows[0];
@@ -1399,7 +1672,17 @@ mod tests {
         let (lines, d) = setup("# Big");
         let th = Theme::ansi();
         let le = |_: &str| true;
-        let ctx = Ctx { theme: &th, width: 40, mode: Mode::Live, heading_mode: HeadingMode::Osc66, images: None, link_exists: &le, max_image_rows: 10, epoch: 0 };
+        let ctx = Ctx {
+            theme: &th,
+            width: 40,
+            mode: Mode::Live,
+            heading_mode: HeadingMode::Osc66,
+            images: None,
+            link_exists: &le,
+            embed: &|_: &str, _: &str| None,
+            max_image_rows: 10,
+            epoch: 0,
+        };
         let l = Layout::new();
         let rows = l.rows(&ctx, &lines, &d, 0, Some(5), false);
         assert_eq!(rows[0].scale, 2);

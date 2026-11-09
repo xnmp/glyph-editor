@@ -96,11 +96,33 @@ fn kitty_functional(code: u32) -> Option<&'static str> {
         27 => "escape",
         127 => "backspace",
         32 => "space",
-        57399 => "0", 57400 => "1", 57401 => "2", 57402 => "3", 57403 => "4", 57404 => "5",
-        57405 => "6", 57406 => "7", 57407 => "8", 57408 => "9", 57409 => ".", 57410 => "/",
-        57411 => "*", 57412 => "-", 57413 => "+", 57414 => "enter", 57415 => "=",
-        57417 => "left", 57418 => "right", 57419 => "up", 57420 => "down", 57421 => "pageup",
-        57422 => "pagedown", 57423 => "home", 57424 => "end", 57425 => "insert", 57426 => "delete",
+        57399 => "0",
+        57400 => "1",
+        57401 => "2",
+        57402 => "3",
+        57403 => "4",
+        57404 => "5",
+        57405 => "6",
+        57406 => "7",
+        57407 => "8",
+        57408 => "9",
+        57409 => ".",
+        57410 => "/",
+        57411 => "*",
+        57412 => "-",
+        57413 => "+",
+        57414 => "enter",
+        57415 => "=",
+        57417 => "left",
+        57418 => "right",
+        57419 => "up",
+        57420 => "down",
+        57421 => "pageup",
+        57422 => "pagedown",
+        57423 => "home",
+        57424 => "end",
+        57425 => "insert",
+        57426 => "delete",
         _ => return None,
     })
 }
@@ -113,8 +135,18 @@ fn tilde(code: u32) -> Option<&'static str> {
         4 | 8 => "end",
         5 => "pageup",
         6 => "pagedown",
-        11 => "f1", 12 => "f2", 13 => "f3", 14 => "f4", 15 => "f5", 17 => "f6", 18 => "f7",
-        19 => "f8", 20 => "f9", 21 => "f10", 23 => "f11", 24 => "f12",
+        11 => "f1",
+        12 => "f2",
+        13 => "f3",
+        14 => "f4",
+        15 => "f5",
+        17 => "f6",
+        18 => "f7",
+        19 => "f8",
+        20 => "f9",
+        21 => "f10",
+        23 => "f11",
+        24 => "f12",
         _ => return None,
     })
 }
@@ -327,26 +359,26 @@ impl Parser {
         let f = s[k];
         let params = std::str::from_utf8(&s[j..k]).unwrap_or("");
         let end = k + 1;
-        if let Some(p) = params.strip_prefix('<') {
-            if f == b'M' || f == b'm' {
-                let v: Vec<u32> = p.split(';').filter_map(|x| x.parse().ok()).collect();
-                if v.len() != 3 {
-                    return Some((end, None));
-                }
-                let (b, x, y) = (v[0], v[1].saturating_sub(1) as u16, v[2].saturating_sub(1) as u16);
-                let mods = (if b & 4 != 0 { SHIFT } else { 0 }) | (if b & 8 != 0 { ALT } else { 0 }) | (if b & 16 != 0 { CTRL } else { 0 });
-                let btn = (b & 3) as u8;
-                let kind = if b & 64 != 0 {
-                    MouseKind::Wheel
-                } else if b & 32 != 0 {
-                    if btn == 3 { MouseKind::Move } else { MouseKind::Drag }
-                } else if f == b'M' {
-                    MouseKind::Press
-                } else {
-                    MouseKind::Release
-                };
-                return Some((end, Some(Event::Mouse(Mouse { kind, button: btn, x, y, mods }))));
+        if let Some(p) = params.strip_prefix('<')
+            && (f == b'M' || f == b'm')
+        {
+            let v: Vec<u32> = p.split(';').filter_map(|x| x.parse().ok()).collect();
+            if v.len() != 3 {
+                return Some((end, None));
             }
+            let (b, x, y) = (v[0], v[1].saturating_sub(1) as u16, v[2].saturating_sub(1) as u16);
+            let mods = (if b & 4 != 0 { SHIFT } else { 0 }) | (if b & 8 != 0 { ALT } else { 0 }) | (if b & 16 != 0 { CTRL } else { 0 });
+            let btn = (b & 3) as u8;
+            let kind = if b & 64 != 0 {
+                MouseKind::Wheel
+            } else if b & 32 != 0 {
+                if btn == 3 { MouseKind::Move } else { MouseKind::Drag }
+            } else if f == b'M' {
+                MouseKind::Press
+            } else {
+                MouseKind::Release
+            };
+            return Some((end, Some(Event::Mouse(Mouse { kind, button: btn, x, y, mods }))));
         }
         if let Some(_p) = params.strip_prefix('?') {
             return Some((

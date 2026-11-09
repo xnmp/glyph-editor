@@ -64,7 +64,22 @@ pub struct Vt {
 
 impl Vt {
     pub fn new(w: usize, h: usize) -> Vt {
-        Vt { w, h, cells: vec![VCell::blank(); w * h], cx: 0, cy: 0, cursor_visible: true, style: Style::new(), link: None, images: HashMap::new(), placements: vec![], title: String::new(), clipboard: None, pending: vec![], chunk: None }
+        Vt {
+            w,
+            h,
+            cells: vec![VCell::blank(); w * h],
+            cx: 0,
+            cy: 0,
+            cursor_visible: true,
+            style: Style::new(),
+            link: None,
+            images: HashMap::new(),
+            placements: vec![],
+            title: String::new(),
+            clipboard: None,
+            pending: vec![],
+            chunk: None,
+        }
     }
 
     pub fn cell(&self, x: usize, y: usize) -> &VCell {
@@ -300,10 +315,8 @@ impl Vt {
                 }
             }
             b'm' => self.sgr(p),
-            b'h' | b'l' if p.starts_with('?') => {
-                if p == "?25" {
-                    self.cursor_visible = f == b'h';
-                }
+            b'h' | b'l' if p.starts_with('?') && p == "?25" => {
+                self.cursor_visible = f == b'h';
             }
             _ => {}
         }
@@ -378,10 +391,10 @@ impl Vt {
             self.put_scaled(text, s);
         } else if let Some(t) = body.strip_prefix("2;") {
             self.title = t.to_string();
-        } else if let Some(rest) = body.strip_prefix("52;") {
-            if let Some((_, b)) = rest.split_once(';') {
-                self.clipboard = base64::engine::general_purpose::STANDARD.decode(b).ok().map(|v| String::from_utf8_lossy(&v).to_string());
-            }
+        } else if let Some(rest) = body.strip_prefix("52;")
+            && let Some((_, b)) = rest.split_once(';')
+        {
+            self.clipboard = base64::engine::general_purpose::STANDARD.decode(b).ok().map(|v| String::from_utf8_lossy(&v).to_string());
         }
     }
 
@@ -464,20 +477,46 @@ impl Vt {
     }
 
     /// Render the screen to an image (cell size cw×ch).
-    pub fn screenshot(&self, font: &ab_glyph::FontVec, bold: Option<&ab_glyph::FontVec>, cw: u32, ch: u32, default_fg: (u8, u8, u8), default_bg: (u8, u8, u8)) -> RgbaImage {
+    pub fn screenshot(
+        &self,
+        font: &ab_glyph::FontVec,
+        bold: Option<&ab_glyph::FontVec>,
+        cw: u32,
+        ch: u32,
+        default_fg: (u8, u8, u8),
+        default_bg: (u8, u8, u8),
+    ) -> RgbaImage {
         use ab_glyph::{Font, ScaleFont};
         let mut img = RgbaImage::from_pixel(self.w as u32 * cw, self.h as u32 * ch, Rgba([default_bg.0, default_bg.1, default_bg.2, 255]));
         let rgb = |c: Color, def: (u8, u8, u8)| -> (u8, u8, u8) {
             match c {
                 Color::Rgb(r, g, b) => (r, g, b),
                 Color::Idx(i) => {
-                    const P: [(u8, u8, u8); 16] = [(0, 0, 0), (205, 49, 49), (13, 188, 121), (229, 229, 16), (36, 114, 200), (188, 63, 188), (17, 168, 205), (229, 229, 229), (102, 102, 102), (241, 76, 76), (35, 209, 139), (245, 245, 67), (59, 142, 234), (214, 112, 214), (41, 184, 219), (255, 255, 255)];
+                    const P: [(u8, u8, u8); 16] = [
+                        (0, 0, 0),
+                        (205, 49, 49),
+                        (13, 188, 121),
+                        (229, 229, 16),
+                        (36, 114, 200),
+                        (188, 63, 188),
+                        (17, 168, 205),
+                        (229, 229, 229),
+                        (102, 102, 102),
+                        (241, 76, 76),
+                        (35, 209, 139),
+                        (245, 245, 67),
+                        (59, 142, 234),
+                        (214, 112, 214),
+                        (41, 184, 219),
+                        (255, 255, 255),
+                    ];
                     P[(i as usize) % 16]
                 }
                 Color::Default => def,
             }
         };
-        let decoded: HashMap<u32, RgbaImage> = self.images.iter().filter_map(|(id, im)| image::load_from_memory(&im.png).ok().map(|d| (*id, d.to_rgba8()))).collect();
+        let decoded: HashMap<u32, RgbaImage> =
+            self.images.iter().filter_map(|(id, im)| image::load_from_memory(&im.png).ok().map(|d| (*id, d.to_rgba8()))).collect();
         // backgrounds
         for y in 0..self.h {
             for x in 0..self.w {

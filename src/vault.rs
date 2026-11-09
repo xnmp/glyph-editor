@@ -42,7 +42,16 @@ fn key(s: &str) -> String {
 impl Vault {
     pub fn open(root: &Path) -> Vault {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let mut v = Vault { root, files: vec![], notes: vec![], stems: HashMap::new(), rel_noext: HashSet::new(), by_name: HashMap::new(), index: HashMap::new(), truncated: false };
+        let mut v = Vault {
+            root,
+            files: vec![],
+            notes: vec![],
+            stems: HashMap::new(),
+            rel_noext: HashSet::new(),
+            by_name: HashMap::new(),
+            index: HashMap::new(),
+            truncated: false,
+        };
         v.rescan();
         v
     }
@@ -143,11 +152,7 @@ impl Vault {
     pub fn new_note_path(&self, target: &str, from: Option<&Path>) -> PathBuf {
         let t = target.trim();
         let t = if t.ends_with(".md") { t.to_string() } else { format!("{t}.md") };
-        if t.contains('/') {
-            self.root.join(t)
-        } else {
-            from.and_then(|f| f.parent()).map(|d| d.join(&t)).unwrap_or_else(|| self.root.join(&t))
-        }
+        if t.contains('/') { self.root.join(t) } else { from.and_then(|f| f.parent()).map(|d| d.join(&t)).unwrap_or_else(|| self.root.join(&t)) }
     }
 
     fn refresh_index(&mut self) {

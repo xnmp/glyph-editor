@@ -10,12 +10,19 @@ fn main() {
     let ed = &mut h.app.tabs[0].ed;
     ed.doc();
     let t = Instant::now();
-    for _ in 0..20 { ed.insert("x"); }
+    for _ in 0..20 {
+        ed.insert("x");
+    }
     println!("ed.insert: {:?}", t.elapsed() / 20);
     let t = Instant::now();
-    for _ in 0..20 { ed.insert("x"); ed.doc(); }
+    for _ in 0..20 {
+        ed.insert("x");
+        ed.doc();
+    }
     println!("ed.insert+doc: {:?}", t.elapsed() / 20);
     let t = Instant::now();
-    for _ in 0..20 { ed.type_char('y'); }
+    for _ in 0..20 {
+        ed.type_char('y');
+    }
     println!("type_char: {:?}", t.elapsed() / 20);
 }

@@ -164,11 +164,11 @@ pub fn sgr(s: &Style, out: &mut String) {
     }
     push_color(out, s.fg, 30);
     push_color(out, s.bg, 40);
-    if s.underline != 0 {
-        if let Color::Rgb(r, g, b) = s.ul_color {
-            use std::fmt::Write;
-            let _ = write!(out, ";58:2::{}:{}:{}", r, g, b);
-        }
+    if s.underline != 0
+        && let Color::Rgb(r, g, b) = s.ul_color
+    {
+        use std::fmt::Write;
+        let _ = write!(out, ";58:2::{}:{}:{}", r, g, b);
     }
     out.push('m');
 }

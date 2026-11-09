@@ -44,7 +44,21 @@ impl Editor {
         let doc = md::parse_document(&buf.lines);
         let mut buf = buf;
         buf.take_dirty();
-        Editor { buf, path: None, cursor: Pos::default(), anchor: None, goal_x: None, saved_version: 0, crlf, disk_mtime: None, doc, doc_version: 0, wc: (u64::MAX, 0, 0, None), indent_unit, autopair: true }
+        Editor {
+            buf,
+            path: None,
+            cursor: Pos::default(),
+            anchor: None,
+            goal_x: None,
+            saved_version: 0,
+            crlf,
+            disk_mtime: None,
+            doc,
+            doc_version: 0,
+            wc: (u64::MAX, 0, 0, None),
+            indent_unit,
+            autopair: true,
+        }
     }
 
     pub fn open(path: &Path) -> std::io::Result<Editor> {
@@ -67,10 +81,10 @@ impl Editor {
         if self.crlf {
             text = text.replace('\n', "\r\n");
         }
-        if let Some(dir) = path.parent() {
-            if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir)?;
-            }
+        if let Some(dir) = path.parent()
+            && !dir.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(dir)?;
         }
         // atomic write: temp file + rename (preserving permissions)
         let tmp = path.with_file_name(format!(".{}.glyph-tmp", path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()));
@@ -176,35 +190,47 @@ impl Editor {
 
     // ------------------------------------------------------------- motion
     pub fn left(&mut self, select: bool) {
-        if !select {
-            if let Some((a, _)) = self.selection() {
-                self.set_cursor(a, false);
-                return;
-            }
+        if !select && let Some((a, _)) = self.selection() {
+            self.set_cursor(a, false);
+            return;
         }
         let p = self.cursor;
-        let np = if p.col > 0 { Pos::new(p.line, prev_boundary(self.line(p.line), p.col)) } else if p.line > 0 { Pos::new(p.line - 1, self.line(p.line - 1).len()) } else { p };
+        let np = if p.col > 0 {
+            Pos::new(p.line, prev_boundary(self.line(p.line), p.col))
+        } else if p.line > 0 {
+            Pos::new(p.line - 1, self.line(p.line - 1).len())
+        } else {
+            p
+        };
         self.set_cursor(np, select);
         self.goal_x = None;
     }
 
     pub fn right(&mut self, select: bool) {
-        if !select {
-            if let Some((_, b)) = self.selection() {
-                self.set_cursor(b, false);
-                return;
-            }
+        if !select && let Some((_, b)) = self.selection() {
+            self.set_cursor(b, false);
+            return;
         }
         let p = self.cursor;
         let len = self.line(p.line).len();
-        let np = if p.col < len { Pos::new(p.line, next_boundary(self.line(p.line), p.col)) } else if p.line + 1 < self.buf.len() { Pos::new(p.line + 1, 0) } else { p };
+        let np = if p.col < len {
+            Pos::new(p.line, next_boundary(self.line(p.line), p.col))
+        } else if p.line + 1 < self.buf.len() {
+            Pos::new(p.line + 1, 0)
+        } else {
+            p
+        };
         self.set_cursor(np, select);
         self.goal_x = None;
     }
 
     pub fn word_left(&mut self, select: bool) {
         let p = self.cursor;
-        let np = if p.col == 0 && p.line > 0 { Pos::new(p.line - 1, self.line(p.line - 1).len()) } else { Pos::new(p.line, text::prev_word(self.line(p.line), p.col)) };
+        let np = if p.col == 0 && p.line > 0 {
+            Pos::new(p.line - 1, self.line(p.line - 1).len())
+        } else {
+            Pos::new(p.line, text::prev_word(self.line(p.line), p.col))
+        };
         self.set_cursor(np, select);
         self.goal_x = None;
     }
@@ -348,20 +374,20 @@ impl Editor {
             self.buf.seal();
             return;
         }
-        if self.autopair {
-            if let Some(&(o, cl)) = PAIRS.iter().find(|q| q.0 == c) {
-                let next_ok = next.is_none_or(|n| n.is_whitespace() || ")]}.,;:!?".contains(n));
-                let symmetric = o == cl;
-                let prev_ok = !symmetric || prev.is_none_or(|p| p.is_whitespace() || "([{".contains(p));
-                let in_code = self.in_code_block(p.line) && c != '(' && c != '[' && c != '{';
-                if next_ok && prev_ok && !in_code {
-                    self.begin("");
-                    self.replace(p, p, &format!("{o}{cl}"));
-                    self.cursor = Pos::new(p.line, p.col + o.len_utf8());
-                    self.commit();
-                    self.buf.seal();
-                    return;
-                }
+        if self.autopair
+            && let Some(&(o, cl)) = PAIRS.iter().find(|q| q.0 == c)
+        {
+            let next_ok = next.is_none_or(|n| n.is_whitespace() || ")]}.,;:!?".contains(n));
+            let symmetric = o == cl;
+            let prev_ok = !symmetric || prev.is_none_or(|p| p.is_whitespace() || "([{".contains(p));
+            let in_code = self.in_code_block(p.line) && c != '(' && c != '[' && c != '{';
+            if next_ok && prev_ok && !in_code {
+                self.begin("");
+                self.replace(p, p, &format!("{o}{cl}"));
+                self.cursor = Pos::new(p.line, p.col + o.len_utf8());
+                self.commit();
+                self.buf.seal();
+                return;
             }
         }
         self.insert(&s);
@@ -393,17 +419,18 @@ impl Editor {
         let info = self.doc().infos[p.line].clone();
         let line = self.line(p.line).to_string();
         // backspace right after a list marker removes the marker (keeps indent)
-        if let Some(lm) = &info.lst {
-            if p.col == lm.end && info.kind == LineKind::Text {
-                self.begin("");
-                let keep = if lm.task.is_some() { lm.task_start } else { lm.start };
-                let a = Pos::new(p.line, if lm.task.is_some() { lm.task_start } else { lm.start });
-                let _ = keep;
-                self.replace(a, p, "");
-                self.cursor = a;
-                self.commit();
-                return;
-            }
+        if let Some(lm) = &info.lst
+            && p.col == lm.end
+            && info.kind == LineKind::Text
+        {
+            self.begin("");
+            let keep = if lm.task.is_some() { lm.task_start } else { lm.start };
+            let a = Pos::new(p.line, if lm.task.is_some() { lm.task_start } else { lm.start });
+            let _ = keep;
+            self.replace(a, p, "");
+            self.cursor = a;
+            self.commit();
+            return;
         }
         // after "> " of a quote: remove one level
         if info.quote_depth > 0 && p.col == info.quote_end && info.lst.is_none() {
@@ -430,12 +457,11 @@ impl Editor {
         let next = line[p.col..].chars().next();
         self.begin("backspace");
         let mut end = p;
-        if self.autopair {
-            if let (Some(o), Some(n)) = (prev.chars().next(), next) {
-                if PAIRS.iter().any(|q| q.0 == o && q.1 == n) {
-                    end = Pos::new(p.line, p.col + n.len_utf8());
-                }
-            }
+        if self.autopair
+            && let (Some(o), Some(n)) = (prev.chars().next(), next)
+            && PAIRS.iter().any(|q| q.0 == o && q.1 == n)
+        {
+            end = Pos::new(p.line, p.col + n.len_utf8());
         }
         // backspace in leading indentation removes a whole indent unit
         if line[..p.col].chars().all(|c| c == ' ') && p.col >= 2 && end == p {
@@ -507,7 +533,11 @@ impl Editor {
         match info.kind {
             LineKind::Code | LineKind::Fence | LineKind::Front | LineKind::Math => {
                 let ind = indent.to_string();
-                let extra = if info.kind == LineKind::Code && line[..p.col].trim_end().ends_with([':', '{', '(', '[']) { self.indent_unit.clone() } else { String::new() };
+                let extra = if info.kind == LineKind::Code && line[..p.col].trim_end().ends_with([':', '{', '(', '[']) {
+                    self.indent_unit.clone()
+                } else {
+                    String::new()
+                };
                 self.insert_raw(&format!("\n{ind}{extra}"));
             }
             LineKind::TableHead | LineKind::TableRow | LineKind::TableDelim if p.col >= line.trim_end().len() => {
@@ -662,7 +692,8 @@ impl Editor {
     }
 
     fn shift_sel(&mut self, a: usize, b: usize, d: isize) {
-        let f = |p: Pos, e: &Editor| if p.line >= a && p.line <= b && p.col > 0 { e.buf.clamp(Pos::new(p.line, (p.col as isize + d).max(0) as usize)) } else { p };
+        let f =
+            |p: Pos, e: &Editor| if p.line >= a && p.line <= b && p.col > 0 { e.buf.clamp(Pos::new(p.line, (p.col as isize + d).max(0) as usize)) } else { p };
         self.cursor = f(self.cursor, self);
         if let Some(an) = self.anchor {
             self.anchor = Some(f(an, self));
@@ -696,7 +727,11 @@ impl Editor {
             for c in 0..ncols {
                 if r == 1 {
                     let a = aligns.get(c).copied().unwrap_or(b'l');
-                    let dash = "-".repeat(widths[c].saturating_sub(match a { b'c' => 2, b'r' => 1, _ => 0 }));
+                    let dash = "-".repeat(widths[c].saturating_sub(match a {
+                        b'c' => 2,
+                        b'r' => 1,
+                        _ => 0,
+                    }));
                     let cell = match a {
                         b'c' => format!(":{dash}:"),
                         b'r' => format!("{dash}:"),
@@ -895,13 +930,13 @@ impl Editor {
     /// Toggle the task checkbox on line `ln` (mouse click).
     pub fn toggle_task_at(&mut self, ln: usize) {
         let info = self.doc().infos[ln].clone();
-        if let Some(lm) = info.lst {
-            if let Some(tk) = lm.task {
-                self.buf.begin(self.sel(), "");
-                let new = if tk == ' ' { "x" } else { " " };
-                self.replace(Pos::new(ln, lm.task_start + 1), Pos::new(ln, lm.task_start + 2), new);
-                self.commit();
-            }
+        if let Some(lm) = info.lst
+            && let Some(tk) = lm.task
+        {
+            self.buf.begin(self.sel(), "");
+            let new = if tk == ' ' { "x" } else { " " };
+            self.replace(Pos::new(ln, lm.task_start + 1), Pos::new(ln, lm.task_start + 2), new);
+            self.commit();
         }
     }
 
@@ -948,6 +983,9 @@ impl Editor {
                 self.replace(Pos::new(ln, 0), Pos::new(ln, 0), "> ");
             }
         }
+        let d: isize = if all_quoted { -2 } else { 2 };
+        self.cursor = self.buf.clamp(Pos::new(self.cursor.line, (self.cursor.col as isize + d).max(0) as usize));
+        self.anchor = self.anchor.map(|a| self.buf.clamp(a));
         self.commit();
     }
 
@@ -964,7 +1002,8 @@ impl Editor {
                 }
                 Some(lm) => {
                     let m = if ordered { format!("{n}. ") } else { "- ".to_string() };
-                    self.replace(Pos::new(ln, lm.start), Pos::new(ln, lm.marker_end + 1), &m);
+                    let e = if lm.task.is_some() { lm.task_start } else { lm.end };
+                    self.replace(Pos::new(ln, lm.start), Pos::new(ln, e), &m);
                 }
                 None if !line.trim().is_empty() => {
                     let at = info.quote_end + leading_ws(&line[info.quote_end..]);
@@ -1110,9 +1149,27 @@ impl Editor {
         }
     }
 
-    /// Paste: adapts list/quote prefixes of the first line when pasting into a list.
+    /// Paste. A URL pasted over a single-line selection becomes a link
+    /// (Obsidian behaviour).
     pub fn paste(&mut self, t: &str) {
         let t = t.replace("\r\n", "\n");
+        let url = t.trim();
+        if (url.starts_with("http://") || url.starts_with("https://")) && !url.contains(char::is_whitespace) {
+            if let Some((a, b)) = self.selection() {
+                if a.line == b.line {
+                    let label = self.buf.get(a, b);
+                    if !label.starts_with("http") {
+                        self.begin("");
+                        let end = self.replace(a, b, &format!("[{label}]({url})"));
+                        self.cursor = end;
+                        self.anchor = None;
+                        self.commit();
+                        self.buf.seal();
+                        return;
+                    }
+                }
+            }
+        }
         self.begin("");
         self.insert_raw(&t);
         self.commit();
@@ -1212,10 +1269,12 @@ impl Editor {
         let spans = md::parse_inline(&line, 0, line.len());
         let mut best: Option<&md::Span> = None;
         for s in &spans {
-            if s.start <= p.col && p.col <= s.end && matches!(s.kind, SpanKind::Link | SpanKind::WikiLink | SpanKind::Url | SpanKind::Embed | SpanKind::Image | SpanKind::Tag | SpanKind::FootRef) {
-                if best.is_none_or(|b| s.end - s.start < b.end - b.start) {
-                    best = Some(s);
-                }
+            if s.start <= p.col
+                && p.col <= s.end
+                && matches!(s.kind, SpanKind::Link | SpanKind::WikiLink | SpanKind::Url | SpanKind::Embed | SpanKind::Image | SpanKind::Tag | SpanKind::FootRef)
+                && best.is_none_or(|b| s.end - s.start < b.end - b.start)
+            {
+                best = Some(s);
             }
         }
         let s = best?;
@@ -1262,12 +1321,14 @@ pub fn percent_decode(s: &str) -> String {
     let mut out = vec![];
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() + 1 && i + 3 <= b.len() {
-            if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len() + 1
+            && i + 3 <= b.len()
+            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;

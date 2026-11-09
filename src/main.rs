@@ -93,7 +93,7 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
         if p.is_dir() {
             continue;
         }
-        app.open(p, app.tabs.len() > 0);
+        app.open(p, !app.tabs.is_empty());
         opened = true;
     }
     if !opened {
@@ -140,16 +140,16 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode) -> std::io::Result<()> {
             app.layout.clear();
         }
         for e in events {
-            if let Event::Key(k) = &e {
-                if k.key == "hangup" {
-                    for t in &mut app.tabs {
-                        if t.ed.dirty() && t.ed.path.is_some() {
-                            let _ = t.ed.save();
-                        }
+            if let Event::Key(k) = &e
+                && k.key == "hangup"
+            {
+                for t in &mut app.tabs {
+                    if t.ed.dirty() && t.ed.path.is_some() {
+                        let _ = t.ed.save();
                     }
-                    app.quit = true;
-                    continue;
                 }
+                app.quit = true;
+                continue;
             }
             app.handle(e);
         }

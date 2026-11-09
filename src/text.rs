@@ -36,7 +36,7 @@ pub fn next_boundary(s: &str, col: usize) -> usize {
     if b < 0x80 {
         // fast path: ASCII followed by ASCII (or end) is its own grapheme, except CRLF
         let nb = s.as_bytes().get(col + 1).copied();
-        if nb.map_or(true, |c| c < 0x80) {
+        if nb.is_none_or(|c| c < 0x80) {
             return col + 1;
         }
     }
@@ -90,7 +90,7 @@ pub fn word_bounds(s: &str, col: usize) -> (usize, usize) {
     let mut col = snap(s, col.min(s.len()));
     let at = s[col..].chars().next();
     let before = s[..col].chars().next_back();
-    if at.is_none() || (before.map_or(false, is_word_char) && !at.map_or(false, is_word_char)) {
+    if at.is_none() || (before.is_some_and(is_word_char) && !at.is_some_and(is_word_char)) {
         col = prev_boundary(s, col);
     }
     let c = s[col..].chars().next().unwrap();
@@ -204,7 +204,7 @@ pub fn pad_to(s: &str, width: usize) -> String {
     let t = truncate(s, width);
     let w = str_width(&t);
     let mut out = t;
-    out.extend(std::iter::repeat(' ').take(width.saturating_sub(w)));
+    out.extend(std::iter::repeat_n(' ', width.saturating_sub(w)));
     out
 }
 

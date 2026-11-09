@@ -14,6 +14,8 @@ impl App {
         if self.tabs.is_empty() {
             self.open_text("");
         }
+        self.w = self.w.max(1);
+        self.h = self.h.max(1);
         self.layout_panes();
         let (w, h) = (self.w, self.h);
         let mut cv = Canvas::new(w, h, self.theme.base());
@@ -89,11 +91,7 @@ impl App {
                 cv.put(x as i32, 0, "…", bar, self.w);
                 break;
             }
-            let st = if active {
-                Style::fg(th.fg).with_bg(if th.rgb { th.canvas_or(th.bg) } else { Color::Default }).bold()
-            } else {
-                bar
-            };
+            let st = if active { Style::fg(th.fg).with_bg(if th.rgb { th.canvas_or(th.bg) } else { Color::Default }).bold() } else { bar };
             let st = if active && !th.rgb { st.reverse() } else { st };
             cv.put(x as i32, 0, &label, st, self.w);
             let close_st = if dirty { Style::fg(th.accent).with_bg(st.bg) } else { Style::fg(th.faint).with_bg(st.bg) };
@@ -193,7 +191,13 @@ impl App {
                 out.iter()
                     .enumerate()
                     .map(|(k, (_, lvl, t))| {
-                        let st = if Some(k) == active { Style::fg(th.accent).bold() } else if *lvl <= 2 { Style::fg(th.fg) } else { Style::fg(th.muted) };
+                        let st = if Some(k) == active {
+                            Style::fg(th.accent).bold()
+                        } else if *lvl <= 2 {
+                            Style::fg(th.fg)
+                        } else {
+                            Style::fg(th.muted)
+                        };
                         (t.clone(), st, (*lvl - min_level) as usize * 2)
                     })
                     .collect()
@@ -238,6 +242,14 @@ impl App {
 
     fn draw_scrollbar(&mut self, cv: &mut Canvas) {
         let r = self.editor_rect;
+        let pos_now = (self.cur, self.tabs[self.cur].view.top_line, self.tabs[self.cur].view.top_off);
+        if pos_now != self.scroll_seen.0 {
+            self.scroll_seen = (pos_now, Some(std::time::Instant::now()));
+        }
+        // overlay-style: only visible for a moment after the view scrolls
+        if !self.scroll_seen.1.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200)) {
+            return;
+        }
         let t = &self.tabs[self.cur];
         let n = t.ed.buf.len();
         if n <= r.h || r.h < 4 {
@@ -246,7 +258,7 @@ impl App {
         let th = &self.theme;
         let thumb = (r.h * r.h / n).clamp(1, r.h);
         let pos = ((t.view.top_line as f64 / n.saturating_sub(1).max(1) as f64) * (r.h - thumb) as f64).round() as usize;
-        let x = r.x + r.w - 1;
+        let x = r.x + (r.w).saturating_sub(1);
         let col = if th.rgb { th.border } else { th.faint };
         for k in 0..thumb {
             cv.put(x as i32, (r.y + pos + k) as i32, "▕", Style::fg(col).with_bg(th.bg), self.w);
@@ -267,7 +279,13 @@ impl App {
         };
         let c = t.ed.cursor;
         let col = crate::text::str_width(&t.ed.line(c.line)[..c.col]) + 1;
-        let saved = if t.ed.dirty() { "● unsaved" } else if t.ed.path.is_some() { "✓ saved" } else { "untitled" };
+        let saved = if t.ed.dirty() {
+            "● unsaved"
+        } else if t.ed.path.is_some() {
+            "✓ saved"
+        } else {
+            "untitled"
+        };
         let sel = t.ed.selection().map(|(a, b)| {
             let s = t.ed.buf.get(a, b);
             format!("{} selected  ", s.chars().count())
@@ -286,15 +304,15 @@ impl App {
         cv.put(0, y as i32, &truncate(&left.0, rx.saturating_sub(1)), left.1.with_bg(bg.bg), rx);
         cv.put(rx as i32, y as i32, &right, Style::fg(th.muted).with_bg(bg.bg), self.w);
         // mode in accent
-        let mx = self.w - str_width(mode) - 1;
-        cv.put(mx as i32, y as i32, mode, Style::fg(th.accent).bold().with_bg(bg.bg), self.w);
+        let mx = self.w as i32 - str_width(mode) as i32 - 1;
+        cv.put(mx, y as i32, mode, Style::fg(th.accent).bold().with_bg(bg.bg), self.w);
     }
 
     fn draw_find(&mut self, cv: &mut Canvas, nmatch: usize, cur_match: Option<usize>) {
         let th = self.theme.clone();
         let Some(f) = &self.find else { return };
         let rows = if f.replacing { 2 } else { 1 };
-        let y0 = self.h - 1 - rows;
+        let y0 = self.h.saturating_sub(1 + rows);
         let bg = Style::bg(if th.rgb { th.panel } else { Color::Default });
         cv.fill(0, y0, self.w, rows, bg);
         let label_w = 10;
@@ -306,7 +324,8 @@ impl App {
             format!("{} of {}", cur_match.map_or(0, |m| m + 1), nmatch)
         };
         let case = if f.case { "[Aa]" } else { " Aa " };
-        let fields: Vec<(&str, &crate::app::LineInput)> = if f.replacing { vec![(" Find", &f.query), (" Replace", &f.replace)] } else { vec![(" Find", &f.query)] };
+        let fields: Vec<(&str, &crate::app::LineInput)> =
+            if f.replacing { vec![(" Find", &f.query), (" Replace", &f.replace)] } else { vec![(" Find", &f.query)] };
         let mut cur = None;
         for (i, (lab, inp)) in fields.iter().enumerate() {
             let y = y0 + i;
@@ -320,7 +339,13 @@ impl App {
             }
             if i == 0 {
                 let info = format!("{count}  {case}");
-                cv.put((label_w + fw + 2) as i32, y as i32, &info, Style::fg(if nmatch == 0 && !f.query.text.is_empty() { th.red } else { th.muted }).with_bg(bg.bg), self.w);
+                cv.put(
+                    (label_w + fw + 2) as i32,
+                    y as i32,
+                    &info,
+                    Style::fg(if nmatch == 0 && !f.query.text.is_empty() { th.red } else { th.muted }).with_bg(bg.bg),
+                    self.w,
+                );
             } else {
                 cv.put((label_w + fw + 2) as i32, y as i32, "↵ one  Alt+↵ all", Style::fg(th.faint).with_bg(bg.bg), self.w);
             }
@@ -352,7 +377,7 @@ impl App {
                 }
             }
             cv.fill(x0, y0 + k, w, 1, st);
-            cv.put(x0 as i32 + 1, (y0 + k) as i32, &truncate(it, w - 2), st, x0 + w);
+            cv.put(x0 as i32 + 1, (y0 + k) as i32, &truncate(it, (w).saturating_sub(2)), st, x0 + w);
         }
     }
 
@@ -363,19 +388,28 @@ impl App {
         cv.fill(r.x, r.y, r.w, r.h, Style::bg(bg));
         let horiz = "─".repeat(r.w.saturating_sub(2));
         cv.put(r.x as i32, r.y as i32, &format!("╭{horiz}╮"), bst, self.w);
-        cv.put(r.x as i32, (r.y + r.h - 1) as i32, &format!("╰{horiz}╯"), bst, self.w);
-        for y in r.y + 1..r.y + r.h - 1 {
+        cv.put(r.x as i32, (r.y + (r.h).saturating_sub(1)) as i32, &format!("╰{horiz}╯"), bst, self.w);
+        for y in r.y + 1..r.y + (r.h).saturating_sub(1) {
             cv.put(r.x as i32, y as i32, "│", bst, self.w);
-            cv.put((r.x + r.w - 1) as i32, y as i32, "│", bst, self.w);
+            cv.put((r.x + (r.w).saturating_sub(1)) as i32, y as i32, "│", bst, self.w);
         }
         if !title.is_empty() {
             cv.put(r.x as i32 + 2, r.y as i32, &format!(" {title} "), Style::fg(th.muted).with_bg(bg).bold(), self.w);
         }
     }
 
-    fn draw_list_overlay(&mut self, cv: &mut Canvas, title: &str, prompt: &str, input: &crate::app::LineInput, rows: Vec<(String, String, Vec<usize>, Style)>, sel: usize, empty: &str) {
+    fn draw_list_overlay(
+        &mut self,
+        cv: &mut Canvas,
+        title: &str,
+        prompt: &str,
+        input: &crate::app::LineInput,
+        rows: Vec<(String, String, Vec<usize>, Style)>,
+        sel: usize,
+        empty: &str,
+    ) {
         let th = self.theme.clone();
-        let w = (self.w.saturating_sub(4)).min(76).max(20);
+        let w = (self.w.saturating_sub(4)).min(76).max(20).min(self.w);
         let max_items = (self.h.saturating_sub(8)).clamp(3, 14);
         let n = rows.len().min(max_items);
         let h = 4 + n.max(1);
@@ -388,13 +422,13 @@ impl App {
         cv.put(r.x as i32 + 2, iy as i32, prompt, Style::fg(th.accent).bold().with_bg(bg), self.w);
         let ix = r.x + 2 + str_width(prompt) + 1;
         let iw = r.w.saturating_sub(str_width(prompt) + 5);
-        cv.put(ix as i32, iy as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), r.x + r.w - 1);
+        cv.put(ix as i32, iy as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
         cv.cursor = Some((ix + str_width(&input.text[..input.cur]).min(iw), iy));
         cv.cursor_shape = 6;
         let sep = "─".repeat(r.w.saturating_sub(2));
         cv.put(r.x as i32 + 1, (iy + 1) as i32, &sep, Style::fg(th.border).with_bg(bg), self.w);
         if rows.is_empty() {
-            cv.put(r.x as i32 + 3, (iy + 2) as i32, empty, Style::fg(th.faint).italic().with_bg(bg), r.x + r.w - 1);
+            cv.put(r.x as i32 + 3, (iy + 2) as i32, empty, Style::fg(th.faint).italic().with_bg(bg), r.x + (r.w).saturating_sub(1));
             return;
         }
         let start = if sel >= n { sel + 1 - n } else { 0 };
@@ -406,7 +440,7 @@ impl App {
             if selected && !th.rgb {
                 base = base.reverse();
             }
-            cv.fill(r.x + 1, y, r.w - 2, 1, base);
+            cv.fill(r.x + 1, y, (r.w).saturating_sub(2), 1, base);
             let hw = str_width(hint);
             let lw = r.w.saturating_sub(6 + hw);
             let shown = truncate(label, lw);
@@ -415,12 +449,12 @@ impl App {
             for (ci, ch) in shown.chars().enumerate() {
                 let hl = m.contains(&ci);
                 let s = if hl { base.with_fg(th.accent).bold() } else { base };
-                x = cv.put(x as i32, y as i32, &ch.to_string(), s, r.x + r.w - 2) as usize;
+                x = cv.put(x as i32, y as i32, &ch.to_string(), s, r.x + (r.w).saturating_sub(2)) as usize;
             }
             if !hint.is_empty() {
-                cv.put((r.x + r.w - 2 - hw) as i32, y as i32, hint, Style::fg(th.faint).with_bg(rbg), r.x + r.w - 1);
+                cv.put((r.x + (r.w).saturating_sub(2)) as i32 - hw as i32, y as i32, hint, Style::fg(th.faint).with_bg(rbg), r.x + (r.w).saturating_sub(1));
             }
-            self.overlay_hits.insert(0, (Rect { x: r.x + 1, y, w: r.w - 2, h: 1 }, k));
+            self.overlay_hits.insert(0, (Rect { x: r.x + 1, y, w: (r.w).saturating_sub(2), h: 1 }, k));
         }
     }
 
@@ -432,7 +466,9 @@ impl App {
                 let rows = self
                     .palette_items(&input.text)
                     .into_iter()
-                    .map(|(c, m)| (commands::title(c).to_string(), commands::keys_of(c).first().map(|k| commands::pretty(k)).unwrap_or_default(), m, Style::fg(th.fg)))
+                    .map(|(c, m)| {
+                        (commands::title(c).to_string(), commands::keys_of(c).first().map(|k| commands::pretty(k)).unwrap_or_default(), m, Style::fg(th.fg))
+                    })
                     .collect();
                 self.draw_list_overlay(cv, "Commands", "›", input, rows, *sel, "No matching commands");
             }
@@ -460,14 +496,20 @@ impl App {
                 self.draw_list_overlay(cv, title, "⌕", input, rows, *sel, if input.text.is_empty() { "Type to search all notes" } else { "No results" });
             }
             Overlay::Prompt { title, input, .. } => {
-                let w = self.w.saturating_sub(4).min(60).max(20);
+                let w = self.w.saturating_sub(4).min(60).max(20).min(self.w);
                 let r = Rect { x: (self.w - w) / 2, y: (self.h / 4).max(1), w, h: 3 };
                 self.draw_box(cv, r, title);
                 self.overlay_hits.push((r, usize::MAX));
                 let bg = if th.rgb { th.panel } else { Color::Default };
                 cv.put(r.x as i32 + 2, r.y as i32 + 1, "›", Style::fg(th.accent).bold().with_bg(bg), self.w);
-                cv.put(r.x as i32 + 4, r.y as i32 + 1, &truncate(&input.text, w - 6), Style::fg(th.fg).with_bg(bg), r.x + r.w - 1);
-                cv.cursor = Some((r.x + 4 + str_width(&input.text[..input.cur]).min(w - 6), r.y + 1));
+                cv.put(
+                    r.x as i32 + 4,
+                    r.y as i32 + 1,
+                    &truncate(&input.text, (w).saturating_sub(6)),
+                    Style::fg(th.fg).with_bg(bg),
+                    r.x + (r.w).saturating_sub(1),
+                );
+                cv.cursor = Some((r.x + 4 + str_width(&input.text[..input.cur]).min((w).saturating_sub(6)), r.y + 1));
             }
             Overlay::Confirm { msg, .. } => {
                 let w = (str_width(msg) + 6).min(self.w.saturating_sub(2));
@@ -475,12 +517,12 @@ impl App {
                 self.draw_box(cv, r, "Confirm");
                 self.overlay_hits.push((r, usize::MAX));
                 let bg = if th.rgb { th.panel } else { Color::Default };
-                cv.put(r.x as i32 + 3, r.y as i32 + 1, &truncate(msg, w - 4), Style::fg(th.fg).with_bg(bg), r.x + r.w - 1);
+                cv.put(r.x as i32 + 3, r.y as i32 + 1, &truncate(msg, (w).saturating_sub(4)), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
                 cv.cursor = None;
             }
             Overlay::Help { scroll } => {
-                let w = self.w.saturating_sub(4).min(84).max(30);
-                let h = self.h.saturating_sub(4).max(6);
+                let w = self.w.saturating_sub(4).min(84).max(30).min(self.w);
+                let h = self.h.saturating_sub(4).max(6).min(self.h);
                 let r = Rect { x: (self.w - w) / 2, y: 2.min(self.h.saturating_sub(h)), w, h };
                 self.draw_box(cv, r, "glyph — key bindings (Esc to close)");
                 self.overlay_hits.push((r, usize::MAX));
@@ -498,11 +540,18 @@ impl App {
                     ("Tables", "Tab / Shift+Tab move between cells and auto-format"),
                     ("Links", "Ctrl+Click or Alt+Enter follows; [[ autocompletes notes"),
                     ("Mouse", "Click, drag, double-click word, triple-click line, click ☐ toggles"),
-                    ("Headings", match self.heading_mode { HeadingMode::Osc66 => "rendered with kitty text sizing (OSC 66)", HeadingMode::Image => "rendered as images (kitty graphics)", HeadingMode::Plain => "plain (no OSC 66 / graphics support)" }),
+                    (
+                        "Headings",
+                        match self.heading_mode {
+                            HeadingMode::Osc66 => "rendered with kitty text sizing (OSC 66)",
+                            HeadingMode::Image => "rendered as images (kitty graphics)",
+                            HeadingMode::Plain => "plain (no OSC 66 / graphics support)",
+                        },
+                    ),
                 ] {
                     lines.push((t.to_string(), k.to_string()));
                 }
-                let vis = h - 2;
+                let vis = h.saturating_sub(2);
                 let max_scroll = lines.len().saturating_sub(vis);
                 let s = (*scroll).min(max_scroll);
                 if let Some(Overlay::Help { scroll }) = Some(&ov) {
@@ -510,8 +559,14 @@ impl App {
                 }
                 for (k, (t, keys)) in lines.iter().skip(s).take(vis).enumerate() {
                     let y = r.y + 1 + k;
-                    cv.put(r.x as i32 + 3, y as i32, &truncate(t, w / 2), Style::fg(th.fg).with_bg(bg), r.x + r.w - 1);
-                    cv.put((r.x + w / 2 + 1) as i32, y as i32, &truncate(keys, w / 2 - 3), Style::fg(th.accent).with_bg(bg), r.x + r.w - 1);
+                    cv.put(r.x as i32 + 3, y as i32, &truncate(t, w / 2), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
+                    cv.put(
+                        (r.x + w / 2 + 1) as i32,
+                        y as i32,
+                        &truncate(keys, (w / 2).saturating_sub(3)),
+                        Style::fg(th.accent).with_bg(bg),
+                        r.x + (r.w).saturating_sub(1),
+                    );
                 }
                 cv.cursor = None;
             }

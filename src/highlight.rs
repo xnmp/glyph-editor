@@ -67,9 +67,19 @@ fn classify(stack: &[Scope], names: &mut ScopeNames) -> Tok {
             Tok::Constant
         } else if n.starts_with("constant") || n.starts_with("support.constant") || n.starts_with("variable.language") {
             Tok::Constant
-        } else if n.starts_with("entity.name.function") || n.starts_with("support.function") || n.starts_with("variable.function") || n.starts_with("meta.function-call") && n.contains("name") {
+        } else if n.starts_with("entity.name.function")
+            || n.starts_with("support.function")
+            || n.starts_with("variable.function")
+            || n.starts_with("meta.function-call") && n.contains("name")
+        {
             Tok::Function
-        } else if n.starts_with("entity.name.type") || n.starts_with("entity.name.class") || n.starts_with("support.type") || n.starts_with("support.class") || n.starts_with("entity.other.inherited-class") || n.starts_with("entity.other.attribute-name") {
+        } else if n.starts_with("entity.name.type")
+            || n.starts_with("entity.name.class")
+            || n.starts_with("support.type")
+            || n.starts_with("support.class")
+            || n.starts_with("entity.other.inherited-class")
+            || n.starts_with("entity.other.attribute-name")
+        {
             Tok::Type
         } else if n.starts_with("keyword.operator") || n.starts_with("punctuation") {
             Tok::Punct

@@ -1,8 +1,8 @@
 //! End-to-end tests: the real App rendering into a virtual terminal.
 
 use glyph::app::Config;
-use glyph::testing::{Harness, kitty_caps};
 use glyph::input::{CTRL, SHIFT};
+use glyph::testing::{Harness, kitty_caps};
 use std::time::Instant;
 
 fn png(path: &std::path::Path, w: u32, h: u32) {
@@ -524,4 +524,43 @@ fn backlinks_panel() {
     h.click(x, y, 0);
     let s = h.frame();
     assert!(s.contains("src · links to target here"), "{s}");
+}
+
+#[test]
+fn paste_url_over_selection_makes_link() {
+    let mut h = Harness::new(80, 24, &[("a.md", "see docs here")]);
+    h.keys("ctrl+right right alt+w");
+    h.paste("https://example.com/docs");
+    assert_eq!(h.text(), "see [docs](https://example.com/docs) here");
+}
+
+#[test]
+fn dropped_image_path_becomes_embed() {
+    let mut h = Harness::new(80, 24, &[("notes/a.md", "")]);
+    std::fs::create_dir_all(h.dir.join("assets")).unwrap();
+    let img = h.dir.join("assets/My Pic.png");
+    png(&img, 20, 20);
+    h.paste(&format!("file://{}", img.display().to_string().replace(' ', "%20")));
+    assert_eq!(h.text(), "![My Pic](../assets/My%20Pic.png)");
+    // and it renders
+    h.keys("enter");
+    assert!(!h.vt.placeholder_cells().is_empty(), "{}", h.vt.text());
+}
+
+#[test]
+fn note_embeds_render_inline() {
+    let mut h = Harness::new(
+        80,
+        30,
+        &[
+            ("a.md", "top\n![[Other#Part two]]\nbottom"),
+            ("Other.md", "# Other\nintro\n## Part two\n- [ ] embedded task\nmore **text**\n## Part three\nnot shown"),
+        ],
+    );
+    let s = h.frame();
+    assert!(s.contains("↳ Other › Part two"), "{s}");
+    assert!(!s.contains("![["), "embed source hidden");
+    assert!(s.contains("☐ embedded task"));
+    assert!(s.contains("more text"));
+    assert!(!s.contains("not shown"));
 }
