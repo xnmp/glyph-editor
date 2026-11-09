@@ -176,7 +176,7 @@ fn run(paths: Vec<PathBuf>, config: Config, mode: Mode, want_kitty: bool) -> std
         }
     }
     for t in &mut app.tabs {
-        t.view.mode = mode;
+        t.set_mode(mode);
     }
     if let Some(n) = kitty_note {
         app.set_status(n);

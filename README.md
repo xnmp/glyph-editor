@@ -48,8 +48,11 @@ It's one native Rust binary with micro-style keys, mouse support and no modes.
   - task states (`[ ] [x] [/] [-] …`)
   - frontmatter shown as **Properties**
   - inline `$math$`, rendered to Unicode
-- **Tables** render as box-drawn grids that wrap cell text. Tab and Shift+Tab move between
-  cells and re-align the source.
+- **Tables** render as box-drawn grids that wrap cell text, and stay grids while you edit
+  them, as in Obsidian: only the cell under the caret reveals its markup. Arrow keys move
+  between cells (skipping the pipes and the alignment row), Enter goes down a row (adding one
+  at the end), Backspace on an empty row deletes it, and a typed `|` is escaped. Tab and
+  Shift+Tab move between cells and re-align the source.
 - **Code blocks** get syntect highlighting, recoloured with *your terminal's* palette.
 - **Smart editing:**
   - list, task and quote continuation, where Enter on an empty item ends the list

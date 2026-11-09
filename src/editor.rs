@@ -31,6 +31,9 @@ pub struct Editor {
     wc: (u64, usize, usize, Option<std::time::Instant>),
     pub indent_unit: String,
     pub autopair: bool,
+    /// tables are drawn as grids (live preview): the caret lives inside
+    /// cells, and editing keys act on cells rather than raw pipes
+    pub grid_tables: bool,
 }
 
 const PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('`', '`'), ('"', '"')];
@@ -58,6 +61,7 @@ impl Editor {
             wc: (u64::MAX, 0, 0, None),
             indent_unit,
             autopair: true,
+            grid_tables: true,
         }
     }
 
@@ -167,6 +171,7 @@ impl Editor {
 
     pub fn set_cursor(&mut self, p: Pos, select: bool) {
         let p = self.buf.clamp(p);
+        let p = self.nearest_cell(p);
         if select {
             if self.anchor.is_none() {
                 self.anchor = Some(self.cursor);
@@ -202,6 +207,7 @@ impl Editor {
         } else {
             p
         };
+        let np = self.snap_to_cell(np, false);
         self.set_cursor(np, select);
         self.goal_x = None;
     }
@@ -220,6 +226,7 @@ impl Editor {
         } else {
             p
         };
+        let np = self.snap_to_cell(np, true);
         self.set_cursor(np, select);
         self.goal_x = None;
     }
@@ -231,6 +238,7 @@ impl Editor {
         } else {
             Pos::new(p.line, text::prev_word(self.line(p.line), p.col))
         };
+        let np = self.snap_to_cell(np, false);
         self.set_cursor(np, select);
         self.goal_x = None;
     }
@@ -239,6 +247,7 @@ impl Editor {
         let p = self.cursor;
         let l = self.line(p.line);
         let np = if p.col >= l.len() && p.line + 1 < self.buf.len() { Pos::new(p.line + 1, 0) } else { Pos::new(p.line, text::next_word(l, p.col)) };
+        let np = self.snap_to_cell(np, true);
         self.set_cursor(np, select);
         self.goal_x = None;
     }
@@ -246,6 +255,11 @@ impl Editor {
     /// Smart home: content start (after list/quote/heading markers) ↔ col 0.
     pub fn home(&mut self, select: bool) {
         let ln = self.cursor.line;
+        if let Some((a, _)) = self.grid_cell(self.cursor) {
+            self.set_cursor(Pos::new(ln, a), select);
+            self.goal_x = None;
+            return;
+        }
         let content = self.content_start(ln);
         let col = if self.cursor.col != content && content > 0 { content } else { 0 };
         self.set_cursor(Pos::new(ln, col), select);
@@ -254,7 +268,7 @@ impl Editor {
 
     pub fn end(&mut self, select: bool) {
         let ln = self.cursor.line;
-        let len = self.line(ln).len();
+        let len = self.grid_cell(self.cursor).map_or(self.line(ln).len(), |c| c.1);
         self.set_cursor(Pos::new(ln, len), select);
         self.goal_x = None;
     }
@@ -365,6 +379,13 @@ impl Editor {
             return;
         }
         let p = self.cursor;
+        if c == '|' && self.grid_cell(p).is_some() {
+            // a literal pipe inside a cell must not split it; after an odd run
+            // of backslashes the typed pipe already completes an escape
+            let slashes = self.line(p.line)[..p.col].bytes().rev().take_while(|&b| b == b'\\').count();
+            self.insert(if slashes % 2 == 1 { "|" } else { "\\|" });
+            return;
+        }
         let line = self.line(p.line).to_string();
         let next = line[p.col..].chars().next();
         let prev = line[..p.col].chars().next_back();
@@ -405,6 +426,10 @@ impl Editor {
             return;
         }
         let p = self.cursor;
+        if self.grid_row(p.line).is_some() && self.grid_cell(p).is_none_or(|(a, _)| p.col == a) {
+            self.table_backspace_at_cell_start();
+            return;
+        }
         if p.col == 0 {
             if p.line == 0 {
                 return;
@@ -482,6 +507,9 @@ impl Editor {
             return;
         }
         let p = self.cursor;
+        if self.grid_row(p.line).is_some() && self.grid_cell(p).is_none_or(|(_, b)| p.col == b) {
+            return; // never deletes a cell boundary
+        }
         let len = self.line(p.line).len();
         self.begin("delete");
         if p.col >= len {
@@ -526,6 +554,10 @@ impl Editor {
             self.commit();
         }
         let p = self.cursor;
+        if self.grid_row(p.line).is_some() || (self.grid_tables && self.doc().infos[p.line].kind == LineKind::TableDelim) {
+            self.table_cell_below();
+            return;
+        }
         let info = self.doc().infos[p.line].clone();
         let line = self.line(p.line).to_string();
         let indent = &line[..leading_ws(&line)];
@@ -701,6 +733,114 @@ impl Editor {
     }
 
     // ------------------------------------------------------------- tables
+    /// Cell content ranges of line `ln` when it is a grid-table row (header or body).
+    fn grid_row(&mut self, ln: usize) -> Option<Vec<(usize, usize)>> {
+        if !self.grid_tables || !matches!(self.doc().infos.get(ln)?.kind, LineKind::TableHead | LineKind::TableRow) {
+            return None;
+        }
+        let ncols = self.doc().block_of(ln).map_or(usize::MAX, |b| b.ncols.max(1));
+        let mut cells = md::split_table_row(self.line(ln));
+        // cells past the header's are not drawn, so they are not caret targets
+        cells.truncate(ncols);
+        Some(cells).filter(|c| !c.is_empty())
+    }
+
+    /// `p` moved to the nearest cell edge when it sits on a grid row's pipes or
+    /// padding (or beyond its last drawn cell); otherwise unchanged.
+    fn nearest_cell(&mut self, p: Pos) -> Pos {
+        let Some(cells) = self.grid_row(p.line) else { return p };
+        let edges = cells.iter().flat_map(|&(a, b)| [a, b]);
+        let col = edges.min_by_key(|&e| (e.abs_diff(p.col), e)).unwrap_or(p.col);
+        if cells.iter().any(|&(a, b)| a <= p.col && p.col <= b) { p } else { Pos::new(p.line, col) }
+    }
+
+    /// The grid cell holding `p` (content range, ends inclusive).
+    fn grid_cell(&mut self, p: Pos) -> Option<(usize, usize)> {
+        self.grid_row(p.line)?.into_iter().find(|&(a, b)| a <= p.col && p.col <= b)
+    }
+
+    /// Move `p` off pipes and padding to the nearest cell edge in the
+    /// direction of travel, stepping over the alignment row. Positions outside
+    /// grid tables are returned unchanged.
+    fn snap_to_cell(&mut self, p: Pos, forward: bool) -> Pos {
+        if self.grid_tables && self.doc().infos[p.line].kind == LineKind::TableDelim {
+            // reached by crossing a line end (tables without outer pipes)
+            return if forward && p.line + 1 < self.buf.len() {
+                self.snap_to_cell(Pos::new(p.line + 1, 0), true)
+            } else {
+                let len = self.line(p.line - 1).len();
+                self.snap_to_cell(Pos::new(p.line - 1, len), false)
+            };
+        }
+        let Some(cells) = self.grid_row(p.line) else { return p };
+        if cells.iter().any(|&(a, b)| a <= p.col && p.col <= b) {
+            return p;
+        }
+        let n = self.buf.len();
+        if forward {
+            if let Some(&(a, _)) = cells.iter().find(|c| c.0 > p.col) {
+                return Pos::new(p.line, a);
+            }
+            let mut nl = p.line + 1;
+            if nl < n && self.doc().infos[nl].kind == LineKind::TableDelim {
+                nl += 1;
+            }
+            if nl >= n {
+                return Pos::new(p.line, cells[cells.len() - 1].1);
+            }
+            self.snap_to_cell(Pos::new(nl, 0), true)
+        } else {
+            if let Some(&(_, b)) = cells.iter().rev().find(|c| c.1 < p.col) {
+                return Pos::new(p.line, b);
+            }
+            if p.line == 0 {
+                return Pos::new(0, cells[0].0);
+            }
+            let mut pl = p.line - 1;
+            if pl > 0 && self.doc().infos[pl].kind == LineKind::TableDelim {
+                pl -= 1;
+            }
+            let len = self.line(pl).len();
+            self.snap_to_cell(Pos::new(pl, len), false)
+        }
+    }
+
+    /// Backspace at the start of a cell: deletes the row when every cell in it
+    /// is empty; otherwise does nothing (the pipe before it is structure).
+    fn table_backspace_at_cell_start(&mut self) {
+        let ln = self.cursor.line;
+        let empty = self.grid_row(ln).is_some_and(|c| c.iter().all(|&(a, b)| a == b));
+        if !empty || self.doc().infos[ln].kind != LineKind::TableRow {
+            return;
+        }
+        self.begin("");
+        self.replace(Pos::new(ln - 1, self.line(ln - 1).len()), Pos::new(ln, self.line(ln).len()), "");
+        let prev = if self.doc().infos[ln - 1].kind == LineKind::TableDelim { ln - 2 } else { ln - 1 };
+        let end = self.grid_row(prev).and_then(|c| c.last().copied()).map_or(self.line(prev).len(), |c| c.1);
+        self.cursor = Pos::new(prev, end);
+        self.commit();
+    }
+
+    /// Enter in a grid table: the same column one row down, adding a row at the end.
+    fn table_cell_below(&mut self) {
+        let p = self.cursor;
+        let Some((s, e)) = self.table_bounds(p.line) else { return };
+        let (_, c) = self.cell_index(p).unwrap_or((p.line, 0));
+        let mut nl = if p.line == s { s + 2 } else { p.line + 1 };
+        if nl >= e {
+            let ncols = md::split_table_row(self.line(s)).len().max(1);
+            self.begin("");
+            let end = Pos::new(e - 1, self.line(e - 1).len());
+            self.replace(end, end, &format!("\n|{}", " |".repeat(ncols)));
+            self.commit();
+            nl = e;
+        }
+        let cells = md::split_table_row(self.line(nl));
+        let col = cells.get(c).or(cells.last()).map_or(0, |&(_, b)| b);
+        self.set_cursor(Pos::new(nl, col), false);
+        self.goal_x = None;
+    }
+
     fn table_bounds(&mut self, ln: usize) -> Option<(usize, usize)> {
         let b = self.doc().block_of(ln)?.clone();
         (b.kind == md::BlockKind::Table).then_some((b.start, b.end))
