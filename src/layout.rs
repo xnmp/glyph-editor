@@ -444,7 +444,7 @@ pub fn multicell_rows(text: &str, atoms: &[Atom], spec: (u8, u8, u8), cursor: Op
             chunk.push(at);
             cw += a_w;
             bytes += len;
-            if frac && (cw * fnum) % fden == 0 {
+            if frac && (cw * fnum).is_multiple_of(fden) {
                 flush(&mut chunk, &mut cw, &mut bytes, &mut x, &mut segs);
             }
         }

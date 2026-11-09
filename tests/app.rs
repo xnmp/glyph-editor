@@ -580,7 +580,7 @@ fn back_from_untitled_tab_does_not_panic() {
     h.keys("right right alt+enter");
     assert_eq!(h.text(), "B");
     h.keys("ctrl+t escape alt+left alt+left alt+left alt+right alt+right");
-    h.app.tabs[h.app.cur].ed.cursor.line; // still alive
+    assert!(!h.app.tabs.is_empty(), "still alive");
 }
 
 #[test]
