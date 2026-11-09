@@ -1038,11 +1038,13 @@ impl Editor {
 
     pub fn insert_table(&mut self) {
         self.begin("");
+        self.insert_raw("");
         let p = self.cursor;
-        let prefix = if self.line(p.line).trim().is_empty() { "" } else { "\n\n" };
+        let prefix = if self.line(p.line)[..p.col].trim().is_empty() { "" } else { "\n\n" };
         self.insert_raw(&format!("{prefix}|     |     |\n| --- | --- |\n|     |     |"));
         let l = self.cursor.line - 2;
-        self.cursor = Pos::new(l, 2);
+        let col = self.line(l).find('|').map_or(0, |i| i + 2);
+        self.cursor = self.buf.clamp(Pos::new(l, col));
         self.commit();
     }
 
@@ -1445,6 +1447,18 @@ mod tests {
         e.indent();
         assert_eq!(e.buf.lines.len(), 4);
         assert_eq!(e.cursor.line, 3);
+    }
+
+    #[test]
+    fn insert_table_over_selection_keeps_cursor_valid() {
+        // regression (found by tests/chaos.rs): selection from a blank line into CJK text
+        let mut e = ed("日本語\n|");
+        e.anchor = Some(Pos::new(0, 3));
+        e.insert_table();
+        let l = e.line(e.cursor.line);
+        assert!(l.is_char_boundary(e.cursor.col));
+        assert!(l.starts_with('|') || l.contains("|"));
+        assert_eq!(e.buf.lines[0], "日");
     }
 
     #[test]

@@ -463,6 +463,11 @@ impl App {
     }
 
     fn after_edit(&mut self) {
+        {
+            let ed = &mut self.tabs[self.cur].ed;
+            ed.cursor = ed.buf.clamp(ed.cursor);
+            ed.anchor = ed.anchor.map(|a| ed.buf.clamp(a));
+        }
         self.last_edit = Some(Instant::now());
         self.update_completion();
         self.after_move();
