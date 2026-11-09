@@ -96,7 +96,8 @@ impl Theme {
                     mark_bg: mix(a(3), 0.35),
                     search_bg: mix(a(3), 0.30),
                     search_cur_bg: mix(a(3), 0.65),
-                    heading: [fgc, fgc, accent.blend(fgc, 0.35), accent.blend(fgc, 0.45), accent.blend(fgc, 0.55), accent.blend(fgc, 0.6)],
+                    // Obsidian's default: headings in the text colour, size carries the hierarchy
+                    heading: [fgc, fgc, fgc, fgc, fgc, mix(fgc, 0.75)],
                     red: a(1),
                     green: a(2),
                     yellow: a(3),
@@ -143,7 +144,7 @@ impl Theme {
             mark_bg: i(3),
             search_bg: i(3),
             search_cur_bg: i(11),
-            heading: [Color::Default, Color::Default, i(5), i(5), i(5), i(5)],
+            heading: [Color::Default, Color::Default, Color::Default, Color::Default, Color::Default, i(8)],
             red: i(1),
             green: i(2),
             yellow: i(3),

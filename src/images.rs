@@ -216,7 +216,18 @@ impl ImageStore {
         let (cw, ch) = (self.cell_w, self.cell_h);
         let text = text.to_string();
         // headings render synchronously: they are small and must not flicker
-        let r = render_text(&font, &text, if level == 1 { 1.55 } else { 1.3 } * ch as f32, max_cols * cw, 2 * ch, color);
+        let r = render_text(
+            &font,
+            &text,
+            match level {
+                1 => 1.55,
+                2 => 1.3,
+                _ => 1.1,
+            } * ch as f32,
+            max_cols * cw,
+            2 * ch,
+            color,
+        );
         let out = match r {
             Some((im, xs)) => {
                 let id = new_id(&self.shared);

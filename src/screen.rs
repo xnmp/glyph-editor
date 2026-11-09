@@ -21,6 +21,11 @@ pub struct Cell {
     len: u8,
     pub flag: u8,
     pub scale: u8,
+    /// OSC 66 `w` (block width in scaled cells; 0 = one block per grapheme)
+    pub units: u8,
+    /// fractional font scale n/d (0 = none)
+    pub n: u8,
+    pub d: u8,
     pub style: Style,
 }
 
@@ -28,7 +33,7 @@ impl Cell {
     pub fn blank(style: Style) -> Cell {
         let mut buf = [0u8; 22];
         buf[0] = b' ';
-        Cell { buf, len: 1, flag: NORMAL, scale: 1, style }
+        Cell { buf, len: 1, flag: NORMAL, scale: 1, units: 0, n: 0, d: 0, style }
     }
     pub fn new(text: &str, style: Style) -> Cell {
         let mut c = Cell::blank(style);
@@ -200,6 +205,33 @@ impl Canvas {
             x += cw;
         }
         x
+    }
+
+    /// One OSC 66 block: `text` rendered in `scale*units` × `scale` cells at
+    /// font scale `scale * n/d` (bottom aligned). Returns x after the block.
+    pub fn put_multicell(&mut self, x: i32, y: i32, text: &str, style: Style, scale: u8, units: u8, n: u8, d: u8, clip1: usize) -> i32 {
+        let limit = clip1.min(self.w) as i32;
+        let s = scale as i32;
+        let bw = s * units as i32;
+        if x < 0 || x + bw > limit || y < 0 || (y + s) as usize > self.h || bw == 0 {
+            return x + bw;
+        }
+        let style = self.inherit(style, x as usize, y as usize);
+        for dy in 0..s {
+            for dx in 0..bw {
+                let c = self.at_mut((x + dx) as usize, (y + dy) as usize);
+                *c = Cell::blank(style);
+                c.flag = COVERED;
+                c.len = 0;
+            }
+        }
+        let c = self.at_mut(x as usize, y as usize);
+        *c = Cell::new(text, style);
+        c.scale = scale;
+        c.units = units;
+        c.n = n;
+        c.d = d;
+        x + bw
     }
 
     pub fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, style: Style) {
@@ -376,13 +408,20 @@ impl Screen {
                     out.push_str("\x1b\\");
                     cur_link = c.style.link;
                 }
+                if c.units > 0 {
+                    gfx::text_sized_block(&mut out, c.text(), c.scale, c.units, c.n, c.d);
+                    let bw = c.scale as usize * c.units as usize;
+                    pos = x + bw;
+                    x += bw;
+                    continue;
+                }
                 if c.scale > 1 {
                     let sc = c.scale;
                     let mut run = String::from(c.text());
                     let mut x2 = x + grapheme_width(c.text()).max(1) * sc as usize;
                     while x2 < w {
                         let c2 = cv.at(x2, y);
-                        if c2.flag != NORMAL || c2.scale != sc || c2.style != c.style {
+                        if c2.flag != NORMAL || c2.scale != sc || c2.style != c.style || c2.units != 0 {
                             break;
                         }
                         run.push_str(c2.text());

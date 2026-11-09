@@ -77,6 +77,20 @@ pub fn id_color(id: u32) -> (u8, u8, u8) {
     ((id >> 16) as u8, (id >> 8) as u8, id as u8)
 }
 
+/// One OSC 66 block of `scale*units` × `scale` cells with fractional font
+/// scale n/d, vertically bottom-aligned (extra space reads as margin above,
+/// like heading spacing in a document).
+pub fn text_sized_block(out: &mut String, text: &str, scale: u8, units: u8, n: u8, d: u8) {
+    use std::fmt::Write;
+    let _ = write!(out, "\x1b]66;s={scale}:w={units}");
+    if n > 0 && d > n {
+        let _ = write!(out, ":n={n}:d={d}:v=1");
+    }
+    out.push(';');
+    out.push_str(text);
+    out.push('\x07');
+}
+
 /// OSC 66 multicell text at `scale`.
 pub fn text_sized(out: &mut String, text: &str, scale: u8) {
     out.push_str("\x1b]66;s=");

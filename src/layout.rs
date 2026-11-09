@@ -38,7 +38,12 @@ pub struct Seg {
     pub src: bool,
     /// text is exactly line[a..b] (1:1 graphemes)
     pub run: bool,
+    /// OSC 66 multicell rendering: overall scale `s`; `units` = the `w` key
+    /// (block width in scaled cells, 0 = per grapheme); fractional font scale n/d
     pub scale: u8,
+    pub units: u8,
+    pub n: u8,
+    pub d: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +62,7 @@ pub struct VRow {
     pub kind: RowKind,
     pub cursorable: bool,
     pub fill: Option<Style>,
+    pub fill_x0: u16,
     pub fill_x1: Option<u16>,
     pub image: Option<(Arc<Img>, u32, u16)>,
     pub last: bool,
@@ -65,7 +71,7 @@ pub struct VRow {
 
 impl VRow {
     fn new(a: usize, b: usize) -> VRow {
-        VRow { a, b, segs: vec![], scale: 1, kind: RowKind::Text, cursorable: true, fill: None, fill_x1: None, image: None, last: false, end_x: 0 }
+        VRow { a, b, segs: vec![], scale: 1, kind: RowKind::Text, cursorable: true, fill: None, fill_x0: 0, fill_x1: None, image: None, last: false, end_x: 0 }
     }
     fn deco() -> VRow {
         VRow { cursorable: false, kind: RowKind::Deco, ..VRow::new(0, 0) }
@@ -203,15 +209,41 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
             for (at, x) in row.into_iter().zip(xs) {
                 let w = at.w * scale as u16;
                 if at.hidden || (at.w == 0 && at.repl.is_none()) {
-                    segs.push(Seg { x: x as u16, w: 0, text: String::new(), style: at.style, a: at.a, b: at.b, src: true, run: false, scale });
+                    segs.push(Seg {
+                        x: x as u16,
+                        w: 0,
+                        text: String::new(),
+                        style: at.style,
+                        a: at.a,
+                        b: at.b,
+                        src: true,
+                        run: false,
+                        scale,
+                        units: 0,
+                        n: 0,
+                        d: 0,
+                    });
                     continue;
                 }
                 if let Some(r) = at.repl {
-                    segs.push(Seg { x: x as u16, w, text: r, style: at.style, a: at.a, b: at.b, src: true, run: false, scale });
+                    segs.push(Seg { x: x as u16, w, text: r, style: at.style, a: at.a, b: at.b, src: true, run: false, scale, units: 0, n: 0, d: 0 });
                     continue;
                 }
                 if at.tab {
-                    segs.push(Seg { x: x as u16, w, text: " ".repeat(at.w as usize), style: at.style, a: at.a, b: at.b, src: true, run: false, scale });
+                    segs.push(Seg {
+                        x: x as u16,
+                        w,
+                        text: " ".repeat(at.w as usize),
+                        style: at.style,
+                        a: at.a,
+                        b: at.b,
+                        src: true,
+                        run: false,
+                        scale,
+                        units: 0,
+                        n: 0,
+                        d: 0,
+                    });
                     continue;
                 }
                 if let Some(last) = segs.last_mut()
@@ -225,7 +257,20 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
                     last.text.push_str(&line[at.a..at.b]);
                     continue;
                 }
-                segs.push(Seg { x: x as u16, w, text: line[at.a..at.b].to_string(), style: at.style, a: at.a, b: at.b, src: true, run: true, scale });
+                segs.push(Seg {
+                    x: x as u16,
+                    w,
+                    text: line[at.a..at.b].to_string(),
+                    style: at.style,
+                    a: at.a,
+                    b: at.b,
+                    src: true,
+                    run: true,
+                    scale,
+                    units: 0,
+                    n: 0,
+                    d: 0,
+                });
             }
             segs
         })
@@ -233,7 +278,176 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
 }
 
 const TASK_GLYPHS: &[(char, &str)] = &[(' ', "☐"), ('x', "☑"), ('X', "☑"), ('/', "◐"), ('-', "⊘"), ('!', "!"), ('?', "?"), ('>', "➜"), ('<', "⇠"), ('*', "★")];
-const BULLETS: &[&str] = &["•", "◦", "▪", "▫"];
+const BULLETS: &[&str] = &["•", "•", "•", "•"];
+
+/// A half-height panel edge drawn with block elements; the quadrant corners
+/// read as rounded corners: `▗▄▄▄▖` (top) / `▝▀▀▀▘` (bottom).
+pub fn edge_row(width: usize, color: crate::style::Color, top: bool) -> VRow {
+    let w = width.max(2);
+    let t = if top { format!("▗{}▖", "▄".repeat(w - 2)) } else { format!("▝{}▘", "▀".repeat(w - 2)) };
+    let mut r = VRow::deco();
+    r.segs.push(Seg { x: 0, w: w as u16, text: t, style: Style::fg(color), a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 });
+    r
+}
+
+/// (s, n, d) for OSC 66 headings: H1 2×, H2 2·4/5 = 1.6×, H3 2·2/3 ≈ 1.33×
+/// (close to Obsidian's 1.8/1.6/1.4 ramp while keeping whole-cell chunks).
+pub fn heading_scale(level: u8) -> (u8, u8, u8) {
+    match level {
+        1 => (2, 0, 0),
+        2 => (2, 4, 5),
+        3 => (2, 2, 3),
+        _ => (1, 0, 0),
+    }
+}
+
+/// Lay out atoms as OSC 66 multicell text. Fractional sizes are split into
+/// chunks whose width is a whole number of scaled cells; a chunk also ends at
+/// style changes and before the cursor, so the cursor always sits on a block
+/// boundary where kitty draws a full-height cursor.
+pub fn multicell_rows(text: &str, atoms: &[Atom], spec: (u8, u8, u8), cursor: Option<usize>, width: usize) -> Vec<VRow> {
+    let (s, n, d) = (spec.0 as usize, spec.1 as usize, spec.2 as usize);
+    let frac = n > 0 && d > n;
+    let (fnum, fden) = if frac { (n, d) } else { (1, 1) };
+    let aw = |a: &Atom| -> usize {
+        if a.hidden {
+            0
+        } else if a.tab {
+            1
+        } else {
+            a.w as usize
+        }
+    };
+    // capacity of a row in natural (unscaled) cells, with slack for chunk rounding
+    let cap = (width.saturating_sub(2 * s) * fden / (s * fnum)).max(1);
+    let mut lines: Vec<Vec<&Atom>> = vec![vec![]];
+    let mut w = 0usize;
+    let mut last_break: Option<usize> = None;
+    for at in atoms {
+        let a_w = aw(at);
+        let cur = lines.last_mut().unwrap();
+        if w + a_w > cap && a_w > 0 && !cur.is_empty() {
+            if at.space {
+                cur.push(at);
+                lines.push(vec![]);
+                w = 0;
+                last_break = None;
+                continue;
+            }
+            match last_break {
+                Some(lb) if lb > 0 && lb < cur.len() => {
+                    let carry = cur.split_off(lb);
+                    w = carry.iter().map(|a| aw(a)).sum();
+                    lines.push(carry);
+                }
+                _ => {
+                    lines.push(vec![]);
+                    w = 0;
+                }
+            }
+            last_break = None;
+        }
+        let cur = lines.last_mut().unwrap();
+        cur.push(at);
+        w += a_w;
+        if at.space {
+            last_break = Some(cur.len());
+        }
+    }
+    let nlines = lines.len();
+    let mut rows = vec![];
+    for (li, line) in lines.into_iter().enumerate() {
+        let mut segs: Vec<Seg> = vec![];
+        let mut x = 0usize;
+        let mut chunk: Vec<&Atom> = vec![];
+        let mut cw = 0usize;
+        let mut bytes = 0usize;
+        let flush = |chunk: &mut Vec<&Atom>, cw: &mut usize, bytes: &mut usize, x: &mut usize, segs: &mut Vec<Seg>| {
+            if chunk.is_empty() {
+                return;
+            }
+            let t: String = chunk.iter().map(|a| a.repl.clone().unwrap_or_else(|| if a.tab { " ".into() } else { text[a.a..a.b].to_string() })).collect();
+            let run = chunk.iter().all(|a| a.repl.is_none() && !a.tab) && chunk.windows(2).all(|p| p[0].b == p[1].a);
+            let (units, wcells) = if frac {
+                let u = (*cw * fnum).div_ceil(fden).max(1);
+                (u, s * u)
+            } else {
+                (0, s * *cw)
+            };
+            segs.push(Seg {
+                x: *x as u16,
+                w: wcells as u16,
+                text: t,
+                style: chunk[0].style,
+                a: chunk[0].a,
+                b: chunk.last().unwrap().b,
+                src: true,
+                run,
+                scale: s as u8,
+                units: units as u8,
+                n: if frac { n as u8 } else { 0 },
+                d: if frac { d as u8 } else { 0 },
+            });
+            *x += wcells;
+            chunk.clear();
+            *cw = 0;
+            *bytes = 0;
+        };
+        for at in &line {
+            let a_w = aw(at);
+            if a_w == 0 {
+                flush(&mut chunk, &mut cw, &mut bytes, &mut x, &mut segs);
+                segs.push(Seg {
+                    x: x as u16,
+                    w: 0,
+                    text: String::new(),
+                    style: at.style,
+                    a: at.a,
+                    b: at.b,
+                    src: true,
+                    run: false,
+                    scale: 1,
+                    units: 0,
+                    n: 0,
+                    d: 0,
+                });
+                continue;
+            }
+            let len = at.repl.as_ref().map_or(at.b - at.a, |r| r.len());
+            if !chunk.is_empty() && (chunk[0].style != at.style || (frac && cursor == Some(at.a)) || bytes + len > 20) {
+                flush(&mut chunk, &mut cw, &mut bytes, &mut x, &mut segs);
+            }
+            chunk.push(at);
+            cw += a_w;
+            bytes += len;
+            if frac && (cw * fnum) % fden == 0 {
+                flush(&mut chunk, &mut cw, &mut bytes, &mut x, &mut segs);
+            }
+        }
+        flush(&mut chunk, &mut cw, &mut bytes, &mut x, &mut segs);
+        let src: Vec<&Seg> = segs.iter().filter(|s| s.src).collect();
+        let ra = if li == 0 { 0 } else { src.first().map_or(0, |s| s.a) };
+        let rb = if li + 1 == nlines { text.len() } else { src.last().map_or(ra, |s| s.b) };
+        let mut row = VRow::new(ra, rb);
+        row.segs = segs;
+        row.scale = s as u8;
+        row.end_x = x as u16;
+        rows.push(row);
+    }
+    // a row's start must continue where the previous ended
+    for k in 1..rows.len() {
+        if rows[k].segs.iter().all(|s| !s.src) {
+            rows[k].a = rows[k - 1].b;
+        }
+    }
+    rows
+}
+
+/// Horizontal advance (cells, fractional) of `gw` natural cells inside `s`.
+fn seg_adv(s: &Seg, gw: usize) -> f32 {
+    let f = if s.units > 0 && s.n > 0 && s.d > s.n { s.n as f32 / s.d as f32 } else { 1.0 };
+    gw as f32 * s.scale as f32 * f
+}
 
 pub fn is_image_target(t: &str) -> bool {
     let t = t.split(['?', '#']).next().unwrap_or(t);
@@ -378,14 +592,28 @@ impl Layout {
                         paint(&mut styles, sp.start, sp.open_end, Style::fg(th.faint));
                         paint(&mut styles, sp.close_start, sp.end, Style::fg(th.faint));
                     } else {
+                        // backticks become the pill's padding: same width, so
+                        // revealing them never shifts the line
+                        let pill = Style::fg(th.code_fg).with_bg(th.panel);
                         hide(&mut hidden, sp.start, sp.open_end);
                         hide(&mut hidden, sp.close_start, sp.end);
+                        repl.push((sp.start, sp.open_end, " ".repeat(sp.open_end - sp.start), pill));
+                        repl.push((sp.close_start, sp.end, " ".repeat(sp.end - sp.close_start), pill));
                     }
                     false
                 }
                 SpanKind::Link => {
                     paint(&mut styles, sp.open_end, sp.close_start, th.link_style());
-                    true
+                    let external = sp.target.contains("://") || sp.target.starts_with("mailto:");
+                    if !rev && external && sp.end > sp.close_start {
+                        // Obsidian marks external links with a small arrow
+                        hide(&mut hidden, sp.start, sp.open_end);
+                        hide(&mut hidden, sp.close_start, sp.end);
+                        repl.push((sp.close_start, sp.end, "↗".into(), Style::fg(th.link)));
+                        false
+                    } else {
+                        true
+                    }
                 }
                 SpanKind::WikiLink => {
                     let st = if (ctx.link_exists)(&sp.target) { th.link_style() } else { th.unresolved_style() };
@@ -623,14 +851,41 @@ impl Layout {
                     return self.rows_from(ctx, text, &atoms, vec![], &[], 0, text.len(), None, None, 1, None, false, w);
                 }
                 let mut r = VRow::new(0, text.len());
-                r.segs
-                    .push(Seg { x: 0, w: w as u16, text: "─".repeat(w), style: Style::fg(th.border), a: 0, b: text.len(), src: true, run: false, scale: 1 });
+                r.segs.push(Seg {
+                    x: 0,
+                    w: w as u16,
+                    text: "─".repeat(w),
+                    style: Style::fg(th.border),
+                    a: 0,
+                    b: text.len(),
+                    src: true,
+                    run: false,
+                    scale: 1,
+                    units: 0,
+                    n: 0,
+                    d: 0,
+                });
                 r.end_x = 0;
                 return vec![r];
             }
             _ => {}
         }
-        self.flow_line(ctx, lines, doc, i, reveal, block_active)
+        let mut rows = self.flow_line(ctx, lines, doc, i, reveal, block_active);
+        // rounded tinted box around callouts
+        if let Some(b) = blk.filter(|b| b.kind == BlockKind::Callout && th.rgb) {
+            let tint = th.tint(th.callout_color(&b.callout_kind), 0.10);
+            let folded = b.fold == b'-' && !block_active;
+            if folded && i != b.start {
+                return rows;
+            }
+            if i == b.start {
+                rows.insert(0, edge_row(w, tint, true));
+            }
+            if i == b.end - 1 || (folded && i == b.start) {
+                rows.push(edge_row(w, tint, false));
+            }
+        }
+        rows
     }
 
     // ------------------------------------------------------------------ flowing text
@@ -656,6 +911,9 @@ impl Layout {
             src: true,
             run: false,
             scale: 1,
+            units: 0,
+            n: 0,
+            d: 0,
         };
         let deco_seg = |x: usize, w: usize, t: &str, st: Style| Seg {
             x: x as u16,
@@ -667,6 +925,9 @@ impl Layout {
             src: false,
             run: false,
             scale: 1,
+            units: 0,
+            n: 0,
+            d: 0,
         };
 
         // quote / callout gutter
@@ -679,29 +940,30 @@ impl Layout {
                     return vec![];
                 }
             }
-            let bar = Style::fg(callout_col.unwrap_or(th.faint));
+            // callouts are tinted boxes (no bar) when we know the colours;
+            // quotes get Obsidian's accent border
+            let boxed = callout_col.is_some() && th.rgb;
+            let glyph = if boxed {
+                " "
+            } else if callout_col.is_some() {
+                "▌"
+            } else {
+                "▎"
+            };
+            let bar = Style::fg(callout_col.unwrap_or(th.accent));
             let raw = active_line && reveal.is_some_and(|r| r <= info.quote_end);
             for (k, ch) in text[..info.quote_end].char_indices() {
                 let e = k + ch.len_utf8();
                 let seg = if ch == '>' {
-                    if raw { src_seg(x, 1, ">", th.marker(), k, e) } else { src_seg(x, 1, if callout_col.is_some() { "▌" } else { "▍" }, bar, k, e) }
+                    if raw { src_seg(x, 1, ">", th.marker(), k, e) } else { src_seg(x, 1, glyph, bar, k, e) }
                 } else {
                     src_seg(x, 1, " ", Style::new(), k, e)
                 };
                 prefix.push(seg);
                 x += 1;
             }
-            cont_prefix = prefix
-                .iter()
-                .map(|s| {
-                    deco_seg(
-                        s.x as usize,
-                        s.w as usize,
-                        if s.text == ">" || s.text == "▍" || s.text == "▌" { if callout_col.is_some() { "▌" } else { "▍" } } else { " " },
-                        bar,
-                    )
-                })
-                .collect();
+            cont_prefix =
+                prefix.iter().map(|s| deco_seg(s.x as usize, s.w as usize, if s.text == ">" || s.text == glyph { glyph } else { " " }, bar)).collect();
         }
 
         // callout header
@@ -810,9 +1072,9 @@ impl Layout {
         }
 
         // headings
-        let mut scale = 1u8;
+        let scale = 1u8;
         let is_heading = info.kind == LineKind::Heading;
-        let big = is_heading && info.level <= 2 && info.quote_depth == 0;
+        let big = is_heading && info.level <= 3 && info.quote_depth == 0;
         if is_heading {
             let hst = th.heading_style(info.level);
             base = base.over(hst);
@@ -843,7 +1105,36 @@ impl Layout {
                 }
             }
             if big && ctx.heading_mode == HeadingMode::Osc66 {
-                scale = 2;
+                // multicell heading: H1 2×, H2 1.6×, H3 1.33× (kitty text sizing)
+                let mut atoms = vec![];
+                if !info.setext {
+                    let mstart = crate::text::leading_ws(text);
+                    if mstart > 0 {
+                        atoms.push(Atom::hidden(0, mstart));
+                    }
+                    if active_line {
+                        atoms.extend(self.raw_atoms(text, mstart, info.content, th.marker().bold()));
+                    } else if info.content > mstart {
+                        atoms.push(Atom::hidden(mstart, info.content));
+                    }
+                }
+                let mut end = text.len();
+                if !info.setext && !active_line {
+                    let t = text.trim_end();
+                    let j = t.trim_end_matches('#').len();
+                    if j < t.len() && (j == info.content || t[..j].ends_with([' ', '\t'])) {
+                        end = t[..j].trim_end().len().max(info.content);
+                    }
+                }
+                let start = if info.setext { crate::text::leading_ws(text) } else { info.content };
+                if info.setext && start > 0 {
+                    atoms.push(Atom::hidden(0, start));
+                }
+                atoms.extend(self.inline_atoms(ctx, text, start, end, base, reveal, false).0);
+                if end < text.len() {
+                    atoms.push(Atom::hidden(end, text.len()));
+                }
+                return multicell_rows(text, &atoms, heading_scale(info.level), reveal, ctx.width);
             }
             if !info.setext {
                 let mstart = info.quote_end + crate::text::leading_ws(&text[info.quote_end..]);
@@ -904,6 +1195,9 @@ impl Layout {
                 src: false,
                 run: false,
                 scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
             });
             rows.push(r);
         }
@@ -943,6 +1237,9 @@ impl Layout {
             src: false,
             run: false,
             scale: 1,
+            units: 0,
+            n: 0,
+            d: 0,
         };
         for s in embeds {
             let _ = reveal;
@@ -1094,6 +1391,9 @@ impl Layout {
                         src: false,
                         run: false,
                         scale: 1,
+                        units: 0,
+                        n: 0,
+                        d: 0,
                     });
                     row.end_x = px as u16;
                     out.push(row);
@@ -1128,29 +1428,32 @@ impl Layout {
         let w = ctx.width;
         let is_open = i == b.start;
         let is_close = b.closed && i == b.end - 1;
-        let pad = Seg { x: 0, w: 1, text: " ".into(), style: Style::new(), a: 0, b: 0, src: false, run: false, scale: 1 };
+        let pad = Seg { x: 0, w: 1, text: " ".into(), style: Style::new(), a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 };
         if is_open || is_close {
             if active || ctx.mode == Mode::Source {
                 let atoms = self.raw_atoms(text, 0, text.len(), th.marker());
                 return self.rows_from(ctx, text, &atoms, vec![pad], &[], 0, text.len(), Some(1), Some(1), 1, fill, true, w);
             }
-            let mut r = VRow::new(0, text.len());
-            r.segs.push(Seg { x: 1, w: 0, text: String::new(), style: Style::new(), a: 0, b: text.len(), src: true, run: false, scale: 1 });
-            if is_open && !b.lang.is_empty() {
-                let lw = str_width(&b.lang);
-                r.segs.push(Seg {
-                    x: w.saturating_sub(lw + 1) as u16,
-                    w: lw as u16,
-                    text: b.lang.clone(),
-                    style: Style::fg(th.faint),
-                    a: 0,
-                    b: 0,
-                    src: false,
-                    run: false,
-                    scale: 1,
-                });
-            }
-            r.fill = fill;
+            // fence rows become the panel's rounded half-height edges
+            let mut r = if th.rgb { edge_row(w, th.panel, is_open) } else { VRow::new(0, text.len()) };
+            r.kind = RowKind::Text;
+            r.cursorable = true;
+            r.a = 0;
+            r.b = text.len();
+            r.segs.push(Seg {
+                x: 1,
+                w: 0,
+                text: String::new(),
+                style: Style::new(),
+                a: 0,
+                b: text.len(),
+                src: true,
+                run: false,
+                scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
+            });
             r.end_x = 1;
             return vec![r];
         }
@@ -1182,7 +1485,29 @@ impl Layout {
                 }
             }
         }
-        self.rows_from(ctx, text, &atoms, vec![pad.clone()], &[pad], 0, text.len(), Some(1), Some(1), 1, fill, true, w.saturating_sub(1))
+        let mut rows = self.rows_from(ctx, text, &atoms, vec![pad.clone()], &[pad], 0, text.len(), Some(1), Some(1), 1, fill, true, w.saturating_sub(1));
+        if i == b.start + 1 && !active && !b.lang.is_empty() && ctx.mode != Mode::Source {
+            let lw = str_width(&b.lang);
+            if let Some(r0) = rows.first_mut() {
+                if (r0.end_x as usize) + lw + 3 < w {
+                    r0.segs.push(Seg {
+                        x: (w - lw - 1) as u16,
+                        w: lw as u16,
+                        text: b.lang.clone(),
+                        style: Style::fg(th.faint),
+                        a: 0,
+                        b: 0,
+                        src: false,
+                        run: false,
+                        scale: 1,
+                        units: 0,
+                        n: 0,
+                        d: 0,
+                    });
+                }
+            }
+        }
+        rows
     }
 
     // ------------------------------------------------------------------ math
@@ -1225,7 +1550,20 @@ impl Layout {
             if !r.cursorable {
                 r.kind = RowKind::Deco;
             }
-            r.segs.push(Seg { x: x as u16, w: uw as u16, text: u, style: Style::new().italic(), a: 0, b: 0, src: false, run: false, scale: 1 });
+            r.segs.push(Seg {
+                x: x as u16,
+                w: uw as u16,
+                text: u,
+                style: Style::new().italic(),
+                a: 0,
+                b: 0,
+                src: false,
+                run: false,
+                scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
+            });
             r.fill = fill;
             r.end_x = x as u16;
             rows.push(r);
@@ -1238,7 +1576,8 @@ impl Layout {
         let th = ctx.theme;
         let text = lines[i].as_str();
         let w = ctx.width;
-        let fill = Some(Style::bg(th.sidebar));
+        // Obsidian's Properties: a plain list under a muted heading (no box)
+        let fill: Option<Style> = None;
         let is_key = |l: &str| l.contains(':') && !l.starts_with([' ', '\t', '-']);
         if active {
             if i == b.start || i == b.end - 1 {
@@ -1261,7 +1600,7 @@ impl Layout {
         let mut r = VRow::new(0, text.len());
         r.fill = fill;
         if i == b.start {
-            let lab = " ⚙ Properties";
+            let lab = "Properties";
             r.segs.push(Seg {
                 x: 0,
                 w: str_width(lab) as u16,
@@ -1272,11 +1611,27 @@ impl Layout {
                 src: true,
                 run: false,
                 scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
             });
             return vec![r];
         }
         if i == b.end - 1 {
-            r.segs.push(Seg { x: 0, w: 0, text: String::new(), style: Style::new(), a: 0, b: text.len(), src: true, run: false, scale: 1 });
+            r.segs.push(Seg {
+                x: 0,
+                w: 0,
+                text: String::new(),
+                style: Style::new(),
+                a: 0,
+                b: text.len(),
+                src: true,
+                run: false,
+                scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
+            });
             return vec![r];
         }
         let kw =
@@ -1288,8 +1643,9 @@ impl Layout {
             while va < text.len() && text.as_bytes()[va] == b' ' {
                 va += 1;
             }
-            let lab = crate::text::pad_to(&format!(" {key}"), kw);
-            let prefix = vec![Seg { x: 0, w: kw as u16, text: lab, style: Style::fg(th.muted), a: 0, b: va, src: true, run: false, scale: 1 }];
+            let lab = crate::text::pad_to(key, kw);
+            let prefix =
+                vec![Seg { x: 0, w: kw as u16, text: lab, style: Style::fg(th.muted), a: 0, b: va, src: true, run: false, scale: 1, units: 0, n: 0, d: 0 }];
             let val = &text[va..];
             let atoms = if val.starts_with('[') && val.ends_with(']') {
                 let mut v = self.raw_atoms(text, va, text.len(), Style::fg(th.tag_fg));
@@ -1388,12 +1744,25 @@ impl Layout {
         let bst = Style::fg(th.border);
         let border = |l: &str, mid: &str, r: &str| -> Seg {
             let s = format!("{l}{}{r}", m.widths.iter().map(|w| "─".repeat(w + 2)).collect::<Vec<_>>().join(mid));
-            Seg { x: 0, w: str_width(&s) as u16, text: s, style: bst, a: 0, b: 0, src: false, run: false, scale: 1 }
+            Seg { x: 0, w: str_width(&s) as u16, text: s, style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 }
         };
         if i == b.start + 1 {
             let mut r = VRow::new(0, text.len());
             r.segs.push(border("├", "┼", "┤"));
-            r.segs.push(Seg { x: 0, w: 0, text: String::new(), style: Style::new(), a: 0, b: text.len(), src: true, run: false, scale: 1 });
+            r.segs.push(Seg {
+                x: 0,
+                w: 0,
+                text: String::new(),
+                style: Style::new(),
+                a: 0,
+                b: text.len(),
+                src: true,
+                run: false,
+                scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
+            });
             return vec![r];
         }
         let mut out = vec![];
@@ -1409,7 +1778,7 @@ impl Layout {
         for r in 0..h {
             let mut row = VRow::new(0, text.len());
             let mut x = 0usize;
-            row.segs.push(Seg { x: 0, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1 });
+            row.segs.push(Seg { x: 0, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 });
             x += 1;
             for c in 0..m.widths.len() {
                 let parts: &[Seg] = wrapped.get(c).and_then(|w| w.get(r)).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -1425,7 +1794,7 @@ impl Layout {
                     row.segs.push(s);
                 }
                 x += m.widths[c] + 2;
-                row.segs.push(Seg { x: x as u16, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1 });
+                row.segs.push(Seg { x: x as u16, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 });
                 x += 1;
             }
             row.cursorable = r == 0;
@@ -1434,7 +1803,8 @@ impl Layout {
             }
             if i == b.start {
                 row.fill = Some(Style::bg(th.sidebar));
-                row.fill_x1 = Some(x as u16);
+                row.fill_x0 = 1;
+                row.fill_x1 = Some(x.saturating_sub(1) as u16);
             }
             row.end_x = x.saturating_sub(1) as u16;
             out.push(row);
@@ -1496,16 +1866,16 @@ pub fn x_of_col(row: &VRow, line: &str, col: usize) -> usize {
                 continue;
             }
             if s.run {
-                let mut x = s.x as usize;
+                let mut nat = 0usize;
                 let mut k = s.a;
                 for g in line[s.a..s.b].graphemes(true) {
                     if k >= col {
                         break;
                     }
-                    x += if g == "\t" { 1 } else { grapheme_width(g) } * s.scale as usize;
+                    nat += if g == "\t" { 1 } else { grapheme_width(g) };
                     k += g.len();
                 }
-                return x;
+                return s.x as usize + seg_adv(s, nat).floor() as usize;
             }
             return s.x as usize;
         }
@@ -1526,14 +1896,17 @@ pub fn col_of_x(row: &VRow, line: &str, x: usize) -> usize {
         let (sx, sw) = (s.x as usize, s.w as usize);
         if sx <= x && x < sx + sw {
             if s.run {
-                let mut gx = sx;
+                let mut nat = 0usize;
                 let mut k = s.a;
                 for g in line[s.a..s.b].graphemes(true) {
-                    let gw = grapheme_width(g).max(1) * s.scale as usize;
-                    if x < gx + gw {
-                        return if x - gx >= gw.div_ceil(2) && gw > 1 { k + g.len() } else { k };
+                    let gw = grapheme_width(g).max(1);
+                    let gx = sx as f32 + seg_adv(s, nat);
+                    let gx2 = sx as f32 + seg_adv(s, nat + gw);
+                    if (x as f32) < gx2 - 0.01 {
+                        let mid = (gx + gx2) / 2.0;
+                        return if x as f32 + 0.5 > mid && gx2 - gx > 1.0 { k + g.len() } else { k };
                     }
-                    gx += gw;
+                    nat += gw;
                     k += g.len();
                 }
                 return s.b;
@@ -1601,11 +1974,12 @@ mod tests {
 
     #[test]
     fn concealment_and_reveal() {
-        assert_eq!(render("some **bold** and [link](http://x)", 80, None), ["some bold and link"]);
-        assert_eq!(render("some **bold** and [link](http://x)", 80, Some((0, 7))), ["some **bold** and link"]);
+        assert_eq!(render("some **bold** and [link](http://x)", 80, None), ["some bold and link↗"]);
+        assert_eq!(render("some **bold** and [link](http://x)", 80, Some((0, 7))), ["some **bold** and link↗"]);
+        assert_eq!(render("a [note](other.md) b", 80, None), ["a note b"], "internal links get no arrow");
         assert_eq!(render("# Title", 80, None)[0], "Title");
         assert_eq!(render("# Title", 80, Some((0, 3)))[0], "# Title");
-        assert_eq!(render("- item\n  - sub\n- [ ] todo\n- [x] done", 80, None), ["• item", "│ ◦ sub", "☐ todo", "☑ done"]);
+        assert_eq!(render("- item\n  - sub\n- [ ] todo\n- [x] done", 80, None), ["• item", "│ • sub", "☐ todo", "☑ done"]);
     }
 
     #[test]
@@ -1613,7 +1987,7 @@ mod tests {
         let r = render("- alpha beta gamma delta", 14, None);
         assert_eq!(r, ["• alpha beta", "  gamma delta"]);
         let r = render("> quoted text that wraps", 12, None);
-        assert_eq!(r, ["▍ quoted", "▍ text that", "▍ wraps"]);
+        assert_eq!(r, ["▎ quoted", "▎ text that", "▎ wraps"]);
     }
 
     #[test]
@@ -1628,8 +2002,8 @@ mod tests {
     #[test]
     fn code_and_callout() {
         let r = render("```rust\nfn x() {}\n```", 30, None);
-        assert_eq!(r[0].trim(), "rust");
-        assert_eq!(r[1], " fn x() {}");
+        assert_eq!(r[0].trim(), "");
+        assert!(r[1].starts_with(" fn x() {}") && r[1].ends_with("rust"), "{:?}", r[1]);
         let r = render("> [!warning] Careful\n> body", 40, None);
         assert_eq!(r, ["▌ ⚠ Careful", "▌ body"]);
         let r = render("> [!note]-\n> hidden", 40, None);

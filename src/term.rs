@@ -204,8 +204,8 @@ impl Terminal {
         let mut q = String::from("\x1b[H");
         gfx::query(&mut q);
         q.push_str("\x1b[?u\x1b[>0q\x1b[16t");
-        // text sizing: CPR, a width-2 multicell space, CPR
-        q.push_str("\r\x1b[6n\x1b]66;w=2; \x07\x1b[6n");
+        // text sizing (per the spec): CPR, w=2 space, CPR, s=2 space, CPR
+        q.push_str("\r\x1b[6n\x1b]66;w=2; \x07\x1b[6n\x1b]66;s=2; \x07\x1b[6n");
         // terminal colors
         q.push_str("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
         for i in 0..8 {
@@ -249,7 +249,8 @@ impl Terminal {
             }
         }
         self.parser.expect_cpr = false;
-        if cprs.len() >= 2 && cprs[1].1 >= cprs[0].1 + 2 {
+        // width support moves the cursor by 2, scale support by another 2
+        if cprs.len() >= 3 && cprs[1].1 == cprs[0].1 + 2 && cprs[2].1 == cprs[1].1 + 2 {
             caps.text_sizing = true;
         }
         let name = caps.name.to_lowercase();
@@ -263,7 +264,7 @@ impl Terminal {
             caps.cell_w = 10;
             caps.cell_h = 20;
         }
-        self.write("\r\x1b[2K\x1b[H\x1b[2J");
+        self.write("\r\x1b[2K\x1b[2;1H\x1b[2K\x1b[H\x1b[2J");
         (caps, other)
     }
 }

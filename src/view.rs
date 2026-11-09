@@ -364,10 +364,11 @@ impl View {
                 // fill
                 if let Some(f) = row.fill {
                     let x1 = row.fill_x1.map(|v| v as usize).unwrap_or(self.cw);
+                    let x0 = row.fill_x0 as usize;
                     for dy in 0..row.height() {
                         let yy = y + dy as isize;
                         if yy >= rect.y as isize && yy < bottom {
-                            cv.restyle(self.cx0, yy as usize, x1.min(self.cw + 1), |s| s.over(Style::bg(f.bg)));
+                            cv.restyle(self.cx0 + x0, yy as usize, x1.min(self.cw + 1).saturating_sub(x0), |s| s.over(Style::bg(f.bg)));
                         }
                     }
                 }
@@ -399,21 +400,15 @@ impl View {
                         if seg.w == 0 {
                             continue;
                         }
-                        let mut st = seg.style;
-                        if let Some(Color::Default) = Some(st.bg)
-                            && let Some(f) = row.fill
-                        {
-                            st.bg = f.bg;
-                        }
+                        let st = seg.style;
                         let x = (self.cx0 + seg.x as usize) as i32;
-                        if seg.scale > 1 {
+                        if seg.scale > 1 && seg.units > 0 {
+                            cv.put_multicell(x, sy as i32, &seg.text, st, seg.scale, seg.units, seg.n, seg.d, clip1);
+                        } else if seg.scale > 1 {
                             cv.put_scaled(x, sy as i32, &seg.text, st, seg.scale, clip1);
                         } else {
                             cv.put(x, sy as i32, &seg.text, st, clip1);
                         }
-                    }
-                    if let Some(u) = row.segs.iter().find(|s| s.style.link != 0) {
-                        let _ = u;
                     }
                     // selection + search highlighting
                     let paint_range = |cv: &mut Canvas, a: usize, b: usize, bg: Color| {
@@ -456,16 +451,14 @@ impl View {
                     let cx = self.cx0 + layout::x_of_col(row, &line, cur.col);
                     if row.scale > 1 {
                         // soft cursor inside scaled text: invert the glyph cell
+                        // kitty draws a full-height cursor over any multicell
+                        // block; past the end of the text, add an empty block
                         let cx = cx.min(self.cx0 + self.cw);
-                        if cx < cv.w && cv.at(cx, sy).flag == crate::screen::NORMAL && cv.at(cx, sy).scale > 1 {
-                            cv.restyle(cx, sy, 1, |s| s.reverse());
-                        } else {
-                            // past the end of the scaled text: a full-size block
-                            let st = Style::fg(theme.fg_or(Color::Default)).reverse();
-                            cv.put_scaled(cx as i32, sy as i32, " ", st, row.scale, self.cx0 + self.cw + 2);
+                        if cx < cv.w && !(cv.at(cx, sy).flag == crate::screen::NORMAL && cv.at(cx, sy).scale > 1) {
+                            cv.put_multicell(cx as i32, sy as i32, " ", Style::new(), row.scale, 1, 0, 0, self.cx0 + self.cw + 2 * row.scale as usize);
                         }
                         cursor_at = Some((cx, sy));
-                        cv.cursor = None;
+                        cv.cursor = cursor_at;
                     } else {
                         cursor_at = Some((cx.min(self.cx0 + self.cw), sy));
                         cv.cursor = cursor_at;

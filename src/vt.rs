@@ -20,12 +20,20 @@ pub struct VCell {
     /// 0 = normal, 1 = wide tail, 2 = covered by multicell
     pub flag: u8,
     pub scale: u8,
+    /// OSC 66 block width in scaled cells (0 = one block per grapheme)
+    pub units: u8,
+    pub n: u8,
+    pub d: u8,
     pub link: Option<String>,
 }
 
 impl VCell {
     fn blank() -> VCell {
-        VCell { text: " ".into(), style: Style::new(), flag: 0, scale: 1, link: None }
+        VCell { text: " ".into(), style: Style::new(), flag: 0, scale: 1, units: 0, n: 0, d: 0, link: None }
+    }
+    /// Width in cells of the block this owner cell starts.
+    pub fn block_w(&self) -> usize {
+        if self.units > 0 { self.scale as usize * self.units as usize } else { grapheme_width(&self.text).max(1) * self.scale as usize }
     }
 }
 
@@ -139,7 +147,7 @@ impl Vt {
                     let o = &self.cells[oy * self.w + ox];
                     if o.scale > 1 && o.flag == 0 {
                         let s = o.scale as usize;
-                        let cw = grapheme_width(&o.text).max(1) * s;
+                        let cw = o.block_w();
                         if ox + cw > x && oy + s > y {
                             for dy in 0..s {
                                 for dx in 0..cw {
@@ -170,11 +178,33 @@ impl Vt {
         }
         self.erase_multicell_at(self.cx, self.cy);
         let i = self.cy * self.w + self.cx;
-        self.cells[i] = VCell { text: g.to_string(), style: self.style, flag: 0, scale: 1, link: self.link.clone() };
+        self.cells[i] = VCell { text: g.to_string(), style: self.style, flag: 0, scale: 1, units: 0, n: 0, d: 0, link: self.link.clone() };
         if w == 2 {
-            self.cells[i + 1] = VCell { text: String::new(), style: self.style, flag: 1, scale: 1, link: None };
+            self.cells[i + 1] = VCell { text: String::new(), style: self.style, flag: 1, scale: 1, units: 0, n: 0, d: 0, link: None };
         }
         self.cx += w;
+    }
+
+    /// One block of `s*units` × `s` cells holding all of `text`.
+    fn put_block(&mut self, text: &str, s: usize, units: usize, n: u8, d: u8) {
+        let bw = s * units;
+        if self.cx + bw > self.w || self.cy + s > self.h {
+            return;
+        }
+        for dy in 0..s {
+            for dx in 0..bw {
+                self.erase_multicell_at(self.cx + dx, self.cy + dy);
+            }
+        }
+        for dy in 0..s {
+            for dx in 0..bw {
+                self.cells[(self.cy + dy) * self.w + self.cx + dx] =
+                    VCell { text: String::new(), style: self.style, flag: 2, scale: 1, units: 0, n: 0, d: 0, link: None };
+            }
+        }
+        self.cells[self.cy * self.w + self.cx] =
+            VCell { text: text.to_string(), style: self.style, flag: 0, scale: s as u8, units: units as u8, n, d, link: self.link.clone() };
+        self.cx += bw;
     }
 
     fn put_scaled(&mut self, text: &str, s: usize) {
@@ -190,10 +220,12 @@ impl Vt {
             }
             for dy in 0..s {
                 for dx in 0..cw {
-                    self.cells[(self.cy + dy) * self.w + self.cx + dx] = VCell { text: String::new(), style: self.style, flag: 2, scale: 1, link: None };
+                    self.cells[(self.cy + dy) * self.w + self.cx + dx] =
+                        VCell { text: String::new(), style: self.style, flag: 2, scale: 1, units: 0, n: 0, d: 0, link: None };
                 }
             }
-            self.cells[self.cy * self.w + self.cx] = VCell { text: g.to_string(), style: self.style, flag: 0, scale: s as u8, link: self.link.clone() };
+            self.cells[self.cy * self.w + self.cx] =
+                VCell { text: g.to_string(), style: self.style, flag: 0, scale: s as u8, units: 0, n: 0, d: 0, link: self.link.clone() };
             self.cx += cw;
         }
     }
@@ -387,8 +419,14 @@ impl Vt {
             self.link = if url.is_empty() { None } else { Some(url.to_string()) };
         } else if let Some(rest) = body.strip_prefix("66;") {
             let (meta, text) = rest.split_once(';').unwrap_or(("", rest));
-            let s = meta.split(':').find_map(|kv| kv.strip_prefix("s=")).and_then(|v| v.parse().ok()).unwrap_or(1);
-            self.put_scaled(text, s);
+            let key = |k: &str| meta.split(':').find_map(|kv| kv.strip_prefix(k)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+            let s = key("s=").max(1);
+            let units = key("w=");
+            if units > 0 {
+                self.put_block(text, s, units, key("n=") as u8, key("d=") as u8);
+            } else {
+                self.put_scaled(text, s);
+            }
         } else if let Some(t) = body.strip_prefix("2;") {
             self.title = t.to_string();
         } else if let Some(rest) = body.strip_prefix("52;")
@@ -452,6 +490,22 @@ impl Vt {
             },
             _ => {}
         }
+    }
+
+    /// The multicell block covering (x, y): (owner x, owner y, scale).
+    pub fn block_at(&self, x: usize, y: usize) -> Option<(usize, usize, usize)> {
+        for oy in (y.saturating_sub(7)..=y).rev() {
+            for ox in (x.saturating_sub(14 * 7)..=x).rev() {
+                let o = self.cell(ox, oy);
+                if o.flag == 0 && o.scale > 1 {
+                    let s = o.scale as usize;
+                    if ox + o.block_w() > x && oy + s > y {
+                        return Some((ox, oy, s));
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Images visible through Unicode placeholders: (id, image row, image col, x, y).
@@ -530,7 +584,7 @@ impl Vt {
                     continue;
                 }
                 let s = c.scale.max(1) as u32;
-                let wcells = if c.flag == 0 && s > 1 { grapheme_width(&c.text).max(1) as u32 * s } else { 1 };
+                let wcells = if c.flag == 0 && s > 1 { c.block_w() as u32 } else { 1 };
                 for py in 0..ch * s {
                     for px in 0..cw * wcells {
                         let (ix, iy) = (x as u32 * cw + px, y as u32 * ch + py);
@@ -562,28 +616,42 @@ impl Vt {
                 if c.style.has(DIM) {
                     fg = ((fg.0 as u16 + bg.0 as u16) as u8 / 2, (fg.1 as u16 + bg.1 as u16) as u8 / 2, (fg.2 as u16 + bg.2 as u16) as u8 / 2);
                 }
-                let s = c.scale.max(1) as f32;
-                let f = if c.style.has(BOLD) { bold.unwrap_or(font) } else { font };
-                let px = ch as f32 * 0.82 * s;
-                let sf = f.as_scaled(px);
-                let ox = x as f32 * cw as f32;
-                let base = y as f32 * ch as f32 + (ch as f32 * s - (sf.ascent() - sf.descent())) / 2.0 + sf.ascent();
-                let ch0 = c.text.chars().next().unwrap();
-                let gid = f.glyph_id(ch0);
-                let italic = if c.style.has(ITALIC) { 0.18 } else { 0.0 };
-                let g = gid.with_scale_and_position(px, ab_glyph::point(ox, base));
-                if let Some(og) = f.outline_glyph(g) {
-                    let bb = og.px_bounds();
-                    og.draw(|gx, gy, cov| {
-                        let yy = bb.min.y as i32 + gy as i32;
-                        let skew = ((base - yy as f32) * italic) as i32;
-                        let xx = bb.min.x as i32 + gx as i32 + skew;
-                        if xx >= 0 && yy >= 0 {
-                            blend(&mut img, xx as u32, yy as u32, fg, cov.clamp(0.0, 1.0));
-                        }
-                    });
+                if c.scale <= 1
+                    && c.text.chars().count() == 1
+                    && draw_cell_graphic(&mut img, c.text.chars().next().unwrap(), x as u32 * cw, y as u32 * ch, cw, ch, fg)
+                {
+                    continue;
                 }
-                let wcells = grapheme_width(&c.text).max(1) as u32 * s as u32;
+                let s = c.scale.max(1) as f32;
+                let frac = if c.units > 0 && c.n > 0 && c.d > c.n { c.n as f32 / c.d as f32 } else { 1.0 };
+                let f = if c.style.has(BOLD) { bold.unwrap_or(font) } else { font };
+                let px = ch as f32 * 0.82 * s * frac;
+                let sf = f.as_scaled(px);
+                let italic = if c.style.has(ITALIC) { 0.18 } else { 0.0 };
+                // fractional text is bottom-aligned in its block (v=1)
+                let block_h = ch as f32 * s;
+                let glyph_h = ch as f32 * s * frac;
+                let top = y as f32 * ch as f32 + if frac < 1.0 { block_h - glyph_h } else { 0.0 };
+                let base = top + (glyph_h - (sf.ascent() - sf.descent())) / 2.0 + sf.ascent();
+                let mut ox = x as f32 * cw as f32;
+                for g in c.text.graphemes(true) {
+                    let ch0 = g.chars().next().unwrap();
+                    let gid = f.glyph_id(ch0);
+                    let gl = gid.with_scale_and_position(px, ab_glyph::point(ox, base));
+                    if let Some(og) = f.outline_glyph(gl) {
+                        let bb = og.px_bounds();
+                        og.draw(|gx, gy, cov| {
+                            let yy = bb.min.y as i32 + gy as i32;
+                            let skew = ((base - yy as f32) * italic) as i32;
+                            let xx = bb.min.x as i32 + gx as i32 + skew;
+                            if xx >= 0 && yy >= 0 {
+                                blend(&mut img, xx as u32, yy as u32, fg, cov.clamp(0.0, 1.0));
+                            }
+                        });
+                    }
+                    ox += grapheme_width(g).max(1) as f32 * cw as f32 * s * frac;
+                }
+                let wcells = if c.flag == 0 && c.scale > 1 { c.block_w() as u32 } else { grapheme_width(&c.text).max(1) as u32 };
                 if c.style.underline != 0 {
                     let uc = rgb(if c.style.ul_color.is_set() { c.style.ul_color } else { c.style.fg }, default_fg);
                     let uy = (y as u32 + s as u32) * ch - 3;
@@ -631,15 +699,80 @@ impl Vt {
                 }
             }
         }
-        // cursor
+        // cursor (full height over multicell blocks, like kitty)
         if self.cursor_visible && self.cx < self.w && self.cy < self.h {
-            for py in 2..ch - 2 {
-                blend(&mut img, self.cx as u32 * cw, self.cy as u32 * ch + py, default_fg, 1.0);
-                blend(&mut img, self.cx as u32 * cw + 1, self.cy as u32 * ch + py, default_fg, 1.0);
+            let (bx, by, s) = self.block_at(self.cx, self.cy).unwrap_or((self.cx, self.cy, 1));
+            for py in 2..ch * s as u32 - 2 {
+                blend(&mut img, bx as u32 * cw, by as u32 * ch + py, default_fg, 1.0);
+                blend(&mut img, bx as u32 * cw + 1, by as u32 * ch + py, default_fg, 1.0);
             }
         }
         img
     }
+}
+
+/// Box-drawing and block elements are drawn by terminals (kitty included)
+/// geometrically to the cell edges; mimic that so screenshots are faithful.
+fn draw_cell_graphic(img: &mut RgbaImage, c: char, x0: u32, y0: u32, cw: u32, ch: u32, col: (u8, u8, u8)) -> bool {
+    let px = Rgba([col.0, col.1, col.2, 255]);
+    let rect = |img: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32| {
+        for yy in y..(y + h).min(y0 + ch) {
+            for xx in x..(x + w).min(x0 + cw) {
+                if xx < img.width() && yy < img.height() {
+                    img.put_pixel(xx, yy, px);
+                }
+            }
+        }
+    };
+    let (hw, hh) = (cw / 2, ch / 2);
+    let (mx, my) = (x0 + hw, y0 + hh);
+    match c {
+        '▀' => rect(img, x0, y0, cw, hh),
+        '▄' => rect(img, x0, my, cw, ch - hh),
+        '█' => rect(img, x0, y0, cw, ch),
+        '▌' => rect(img, x0, y0, hw, ch),
+        '▐' => rect(img, mx, y0, cw - hw, ch),
+        '▏' => rect(img, x0, y0, (cw / 8).max(1), ch),
+        '▎' => rect(img, x0, y0, (cw / 4).max(1), ch),
+        '▍' => rect(img, x0, y0, (cw * 3 / 8).max(1), ch),
+        '▕' => rect(img, x0 + cw - (cw / 8).max(1), y0, (cw / 8).max(1), ch),
+        '▖' => rect(img, x0, my, hw, ch - hh),
+        '▗' => rect(img, mx, my, cw - hw, ch - hh),
+        '▘' => rect(img, x0, y0, hw, hh),
+        '▝' => rect(img, mx, y0, cw - hw, hh),
+        _ => {
+            // light/heavy lines: (left, right, up, down)
+            let (l, r, u, d, t) = match c {
+                '─' => (1, 1, 0, 0, 1),
+                '━' => (1, 1, 0, 0, 2),
+                '│' => (0, 0, 1, 1, 1),
+                '┃' => (0, 0, 1, 1, 2),
+                '┌' | '╭' => (0, 1, 0, 1, 1),
+                '┐' | '╮' => (1, 0, 0, 1, 1),
+                '└' | '╰' => (0, 1, 1, 0, 1),
+                '┘' | '╯' => (1, 0, 1, 0, 1),
+                '├' => (0, 1, 1, 1, 1),
+                '┤' => (1, 0, 1, 1, 1),
+                '┬' => (1, 1, 0, 1, 1),
+                '┴' => (1, 1, 1, 0, 1),
+                '┼' => (1, 1, 1, 1, 1),
+                _ => return false,
+            };
+            if l == 1 {
+                rect(img, x0, my, hw + t, t);
+            }
+            if r == 1 {
+                rect(img, mx, my, cw - hw, t);
+            }
+            if u == 1 {
+                rect(img, mx, y0, t, hh + t);
+            }
+            if d == 1 {
+                rect(img, mx, my, t, ch - hh);
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]

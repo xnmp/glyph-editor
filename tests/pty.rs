@@ -103,6 +103,7 @@ impl Pty {
             "\x1b[6;20;10t",
             "\x1b[1;1R",
             "\x1b[1;3R",
+            "\x1b[1;5R",
             "\x1b]10;rgb:dada/dada/dada\x1b\\",
             "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\",
             "\x1b]4;5;rgb:8a8a/5c5c/f5f5\x1b\\",
@@ -174,7 +175,8 @@ fn starts_without_probe_answers() {
     let mut p = spawn(&["a.md"], &dir, 80, 24);
     assert!(p.wait_for(b"hello", Duration::from_secs(5)), "never rendered");
     let out = String::from_utf8_lossy(&p.out.lock().unwrap()).to_string();
-    assert!(!out.contains("\x1b]66;s=2"), "no OSC 66 without detection");
+    // only the probe's two detection sequences, no rendered multicell text
+    assert_eq!(out.matches("\x1b]66;").count(), 2, "no OSC 66 rendering without detection");
     p.send(b"\x11");
     let t = Instant::now();
     while p.child.try_wait().unwrap().is_none() {

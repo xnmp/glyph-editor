@@ -51,12 +51,12 @@ fn headings_use_text_sizing() {
     assert_eq!(h.vt.cell(x2, y2).scale, 2);
     h.type_text("!");
     assert_eq!(h.text(), "text\n# Big Title!\nafter");
-    // soft cursor at the end of a scaled heading is a full-size block
+    // the hardware cursor sits on a multicell block (kitty draws it full height),
+    // including past the end of the text
     let (ex, ey) = h.vt.find("Title!").unwrap();
-    let cur = h.vt.cell(ex + 12, ey);
-    assert_eq!(cur.scale, 2);
-    assert!(cur.style.has(glyph::style::REVERSE));
-    assert!(!h.vt.cursor_visible, "hardware cursor hidden on scaled rows");
+    assert!(h.vt.cursor_visible);
+    assert_eq!((h.vt.cx, h.vt.cy), (ex + 12, ey));
+    assert_eq!(h.vt.block_at(h.vt.cx, h.vt.cy).map(|b| b.2), Some(2));
 }
 
 #[test]
@@ -579,4 +579,28 @@ fn back_from_untitled_tab_does_not_panic() {
     assert_eq!(h.text(), "B");
     h.keys("ctrl+t escape alt+left alt+left alt+left alt+right alt+right");
     h.app.tabs[h.app.cur].ed.cursor.line; // still alive
+}
+
+#[test]
+fn heading_size_ramp_uses_fractional_osc66() {
+    let mut h = Harness::new(100, 30, &[("a.md", "x\n# One\n## Two words here\n### Three\n#### Four")]);
+    h.app.screen.invalidate();
+    let out = h.app.render();
+    let _ = h.frame();
+    assert!(out.contains("\x1b]66;s=2;One\x07"), "H1 at 2x: {out:?}");
+    assert!(out.contains(":w=4:n=4:d=5:v=1;Two w"), "H2 at 1.6x in 5-column chunks: {out:?}");
+    assert!(out.contains(":w=2:n=2:d=3:v=1;Thr"), "H3 at 1.33x in 3-column chunks");
+    let (x, y) = h.vt.find("Two words").unwrap();
+    let c = h.vt.cell(x, y);
+    assert_eq!((c.scale, c.units, c.n, c.d), (2, 4, 4, 5));
+    // H4 stays at normal size
+    let (x, y) = h.vt.find("Four").unwrap();
+    assert_eq!(h.vt.cell(x, y).scale, 1);
+    // editing an H2 splits the chunk at the cursor so it lands on a block start
+    h.keys("down down ctrl+right right");
+    let cur = h.app.tabs[0].ed.cursor;
+    assert_eq!(cur.col, 7, "cursor before 'w' of 'words'");
+    let (bx, by, s) = h.vt.block_at(h.vt.cx, h.vt.cy).expect("cursor on a block");
+    assert_eq!((bx, by, s), (h.vt.cx, h.vt.cy, 2));
+    assert!(h.vt.cell(bx, by).text.starts_with('w'), "{:?}", h.vt.cell(bx, by).text);
 }
