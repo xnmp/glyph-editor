@@ -376,7 +376,7 @@ pub fn parse_document(lines: &[String]) -> Document {
     let n = lines.len();
     let mut infos: Vec<LineInfo> = (0..n).map(|_| LineInfo::default()).collect();
     let mut blocks: Vec<Block> = vec![];
-    let mut add = |infos: &mut Vec<LineInfo>, blocks: &mut Vec<Block>, kind: BlockKind, s: usize, e: usize| -> usize {
+    let add = |infos: &mut Vec<LineInfo>, blocks: &mut Vec<Block>, kind: BlockKind, s: usize, e: usize| -> usize {
         blocks.push(Block { kind, start: s, end: e, lang: String::new(), closed: true, aligns: vec![], ncols: 0, callout_kind: String::new(), fold: 0 });
         let id = blocks.len() - 1;
         for k in s..e {

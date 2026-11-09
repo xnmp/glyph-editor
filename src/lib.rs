@@ -1,4 +1,12 @@
 pub mod buffer;
+pub mod diacritics;
+pub mod graphics;
+pub mod highlight;
+pub mod images;
+pub mod input;
+pub mod layout;
+pub mod mathtext;
+pub mod screen;
 pub mod markdown;
 pub mod style;
 pub mod text;
