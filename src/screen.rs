@@ -123,6 +123,53 @@ impl Canvas {
         (self.links.len() - 1) as u32
     }
 
+    /// Width in cells of the multicell block whose owner is `c`.
+    fn block_w(c: &Cell) -> usize {
+        if c.units > 0 { c.scale as usize * c.units as usize } else { grapheme_width(c.text()).max(1) * c.scale as usize }
+    }
+
+    /// Writing into any cell of a multicell block destroys the whole block
+    /// (that is what terminals do); blank out the rest of it so the canvas and
+    /// the terminal agree.
+    fn break_multicell(&mut self, x: usize, y: usize) {
+        let c = self.cells[y * self.w + x];
+        if c.flag != COVERED && !(c.flag == NORMAL && c.scale > 1) {
+            return;
+        }
+        let (mut ox, mut oy) = (x, y);
+        if c.flag == COVERED {
+            let mut found = None;
+            'search: for yy in (y.saturating_sub(7)..=y).rev() {
+                for xx in (x.saturating_sub(64)..=x).rev() {
+                    let o = &self.cells[yy * self.w + xx];
+                    if o.flag == NORMAL && o.scale > 1 && xx + Self::block_w(o) > x && yy + o.scale as usize > y {
+                        found = Some((xx, yy));
+                        break 'search;
+                    }
+                }
+            }
+            match found {
+                Some(p) => (ox, oy) = p,
+                None => {
+                    // orphaned covered cell: make it a plain blank
+                    let st = c.style;
+                    self.cells[y * self.w + x] = Cell::blank(st);
+                    return;
+                }
+            }
+        }
+        let o = self.cells[oy * self.w + ox];
+        let (bw, s) = (Self::block_w(&o), o.scale as usize);
+        for yy in oy..(oy + s).min(self.h) {
+            for xx in ox..(ox + bw).min(self.w) {
+                let cell = &mut self.cells[yy * self.w + xx];
+                if cell.flag == COVERED || (xx == ox && yy == oy) {
+                    *cell = Cell::blank(Style { fg: o.style.fg, bg: o.style.bg, ..Style::new() });
+                }
+            }
+        }
+    }
+
     #[inline]
     fn inherit(&self, style: Style, x: usize, y: usize) -> Style {
         let mut s = style;
@@ -166,6 +213,10 @@ impl Canvas {
                 }
                 return x + cw;
             }
+            self.break_multicell(x as usize, y);
+            if cw == 2 {
+                self.break_multicell(x as usize + 1, y);
+            }
             let st = self.inherit(style, x as usize, y);
             let c = self.at_mut(x as usize, y);
             *c = Cell::new(g, st);
@@ -189,6 +240,11 @@ impl Canvas {
             if x < 0 || x + cw > limit || y < 0 || (y + s) as usize > self.h {
                 x += cw;
                 continue;
+            }
+            for dy in 0..s {
+                for dx in 0..cw {
+                    self.break_multicell((x + dx) as usize, (y + dy) as usize);
+                }
             }
             let style = self.inherit(style, x as usize, y as usize);
             for dy in 0..s {
@@ -216,6 +272,11 @@ impl Canvas {
         if x < 0 || x + bw > limit || y < 0 || (y + s) as usize > self.h || bw == 0 {
             return x + bw;
         }
+        for dy in 0..s {
+            for dx in 0..bw {
+                self.break_multicell((x + dx) as usize, (y + dy) as usize);
+            }
+        }
         let style = self.inherit(style, x as usize, y as usize);
         for dy in 0..s {
             for dx in 0..bw {
@@ -237,6 +298,7 @@ impl Canvas {
     pub fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, style: Style) {
         for yy in y..(y + h).min(self.h) {
             for xx in x..(x + w).min(self.w) {
+                self.break_multicell(xx, yy);
                 let st = self.inherit(style, xx, yy);
                 *self.at_mut(xx, yy) = Cell::blank(st);
             }
@@ -512,6 +574,20 @@ mod tests {
         let mut s = Screen::new(true);
         let out = s.render(c);
         assert!(out.contains("\x1b]66;s=2;Hi\x07"));
+    }
+
+    #[test]
+    fn overwriting_part_of_a_block_erases_it() {
+        let mut c = Canvas::new(20, 3, Style::new());
+        c.put_multicell(2, 0, "forma", Style::new(), 2, 4, 4, 5, 20);
+        // an overlay writes into the block's covered area
+        c.put(5, 0, "To", Style::new(), 20);
+        assert_eq!(c.at(2, 0).scale, 1, "block destroyed");
+        assert_eq!(c.row_text(0).trim_end(), "     To");
+        assert!(c.cells.iter().all(|x| x.flag != COVERED), "no orphaned covered cells");
+        let mut s = Screen::new(true);
+        let out = s.render(c);
+        assert!(out.contains("To") && !out.contains("]66;"));
     }
 
     #[test]

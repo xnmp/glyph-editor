@@ -477,7 +477,8 @@ impl App {
     /// A key binding rendered as a keycap chip.
     fn chip(&self, cv: &mut Canvas, x: i32, y: usize, k: &str, bg: Color, clip: usize) -> i32 {
         let th = &self.theme;
-        let st = if th.rgb { Style::fg(th.muted).with_bg(th.hover) } else { Style::fg(th.muted) };
+        let chip_bg = if bg == th.hover { th.border } else { th.hover };
+        let st = if th.rgb { Style::fg(th.muted).with_bg(chip_bg) } else { Style::fg(th.muted) };
         let x = cv.put(x, y as i32, &format!(" {k} "), st, clip);
         cv.put(x, y as i32, " ", Style::bg(bg), clip)
     }

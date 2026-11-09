@@ -12,10 +12,23 @@ It's one native Rust binary with micro-style keys, mouse support and no modes.
 
 - **Live preview.** Markdown syntax hides itself until your cursor touches it, element by
   element: bold, links, code, math, list bullets and heading marks.
-- **Real big headings.** On kitty 0.40+, H1 and H2 use OSC 66 multicell text, so they're
-  genuinely larger and you can still edit them in place. Other graphics-capable terminals get
-  headings drawn with a proportional font through the graphics protocol. Everywhere else they
+- **A real heading hierarchy.** On kitty 0.40+, H1 is 2×, H2 1.6× and H3 1.33×, close to
+  Obsidian's scale. They use kitty's text-sizing protocol with fractional scaling (OSC 66
+  `s/w/n/d`), and you can edit them in place with kitty's full-height cursor. Other
+  graphics-capable terminals get headings drawn with a proportional font. Everywhere else they
   fall back to styled text.
+- **Looks like Obsidian:**
+  - an inline title (the note name, large, above the text)
+  - callouts as rounded tinted boxes with the actual Lucide icons Obsidian uses
+  - rounded checkboxes that fill with the accent colour when checked
+  - code blocks as rounded panels, inline code as padded pills
+  - an accent quote bar and external-link arrows
+  - Properties shown as a clean key/value list
+  - the command palette and quick switcher as floating panels with placeholder text,
+    keycap hints and the "↑↓ to navigate · ↵ to use" footer
+  - a status bar with backlinks · words · characters
+
+  Icons and checkboxes are drawn with kitty graphics; other terminals get Unicode glyphs.
 - **Inline images.** Supports `![alt](path)`, `![[image.png]]` (Obsidian embeds) and remote
   URLs, with `|300` or `|300x200` sizing. On kitty and Ghostty, images use Unicode placeholders,
   so they scroll and clip like text. Other kitty-protocol terminals get cropped placements.
