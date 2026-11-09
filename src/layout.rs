@@ -108,6 +108,8 @@ pub struct Ctx<'a> {
     pub embed: &'a dyn Fn(&str, &str) -> Option<Vec<String>>,
     pub max_image_rows: u32,
     pub epoch: u64,
+    /// Obsidian's "inline title": the note name shown large above line 0
+    pub title: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -546,6 +548,9 @@ impl Layout {
         }
         block_active.hash(&mut h);
         cursor.hash(&mut h);
+        if i == 0 {
+            ctx.title.hash(&mut h);
+        }
         (ctx.width, ctx.mode, ctx.heading_mode, ctx.max_image_rows).hash(&mut h);
         if text.contains('!') || text.contains('$') || info.kind == LineKind::Heading || blk.is_some() {
             ctx.epoch.hash(&mut h);
@@ -555,6 +560,14 @@ impl Layout {
             return r.clone();
         }
         let mut rows = self.layout_line(ctx, lines, doc, i, cursor, block_active);
+        if i == 0
+            && let Some(t) = ctx.title
+            && ctx.mode != Mode::Source
+        {
+            let mut tr = self.title_rows(ctx, t);
+            tr.extend(rows);
+            rows = tr;
+        }
         if let Some(last) = rows.iter_mut().rev().find(|r| r.cursorable) {
             last.last = true;
         }
@@ -564,6 +577,44 @@ impl Layout {
             c.clear();
         }
         c.insert(key, rows.clone());
+        rows
+    }
+
+    /// The inline title block: note name at H1 size plus a spacer row.
+    fn title_rows(&self, ctx: &Ctx, title: &str) -> Vec<VRow> {
+        let th = ctx.theme;
+        let st = th.heading_style(1);
+        let atoms = self.raw_atoms(title, 0, title.len(), st);
+        let mut rows = match ctx.heading_mode {
+            HeadingMode::Osc66 => multicell_rows(title, &atoms, heading_scale(1), None, ctx.width),
+            HeadingMode::Image => {
+                let col = st.fg.rgb().unwrap_or(if th.dark { (230, 230, 230) } else { (20, 20, 20) });
+                match ctx.images.map(|imgs| imgs.heading(title, 1, ctx.width as u32, col)) {
+                    Some(ImgRef::Ready(img)) => (0..img.data.rows)
+                        .map(|r| {
+                            let mut row = VRow::new(0, 0);
+                            row.kind = RowKind::Image;
+                            row.image = Some((img.clone(), r, 0));
+                            row
+                        })
+                        .collect(),
+                    _ => self.rows_from(ctx, title, &atoms, vec![], &[], 0, title.len(), None, None, 1, None, false, ctx.width),
+                }
+            }
+            HeadingMode::Plain => self.rows_from(ctx, title, &atoms, vec![], &[], 0, title.len(), None, None, 1, None, false, ctx.width),
+        };
+        for r in rows.iter_mut() {
+            if r.kind != RowKind::Image {
+                r.kind = RowKind::Deco;
+            }
+            r.cursorable = false;
+            r.a = 0;
+            r.b = 0;
+            for s in r.segs.iter_mut() {
+                s.src = false;
+            }
+        }
+        rows.push(VRow::deco());
         rows
     }
 
@@ -2038,6 +2089,7 @@ mod tests {
             embed: &|_: &str, _: &str| None,
             max_image_rows: 10,
             epoch: 0,
+            title: None,
         };
         let l = Layout::new();
         let active_block = cursor.and_then(|(ln, _)| d.infos[ln].block);
@@ -2115,6 +2167,7 @@ mod tests {
             embed: &|_: &str, _: &str| None,
             max_image_rows: 10,
             epoch: 0,
+            title: None,
         };
         let l = Layout::new();
         let rows = l.rows(&ctx, &lines, &d, 0, None, false);
@@ -2146,6 +2199,7 @@ mod tests {
             embed: &|_: &str, _: &str| None,
             max_image_rows: 10,
             epoch: 0,
+            title: None,
         };
         let l = Layout::new();
         let rows = l.rows(&ctx, &lines, &d, 0, Some(5), false);

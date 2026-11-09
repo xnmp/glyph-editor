@@ -135,11 +135,21 @@ pub struct Config {
     pub images: bool,
     pub remote_images: bool,
     pub line_numbers: bool,
+    pub inline_title: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { theme: "terminal".into(), autosave: true, readable_width: 100, heading_mode: None, images: true, remote_images: true, line_numbers: false }
+        Config {
+            theme: "terminal".into(),
+            autosave: true,
+            readable_width: 100,
+            heading_mode: None,
+            images: true,
+            remote_images: true,
+            line_numbers: false,
+            inline_title: true,
+        }
     }
 }
 
@@ -180,6 +190,7 @@ impl Config {
             "images" => self.images = b,
             "remote_images" | "remote-images" => self.remote_images = b,
             "line_numbers" | "line-numbers" => self.line_numbers = b,
+            "inline_title" | "inline-title" => self.inline_title = b,
             _ => {}
         }
     }
@@ -407,7 +418,10 @@ impl App {
             Some(lines[start..end].to_vec())
         };
         let epoch = images.generation() + *embed_gen * 7919;
+        let title_s = tab.ed.path.as_ref().filter(|_| config.inline_title).and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string());
+        let reveal = !tab.view.pristine;
         let env = Env {
+            reveal,
             layout,
             ctx: Ctx {
                 theme,
@@ -417,6 +431,7 @@ impl App {
                 images: if config.images && caps.graphics { Some(images) } else { None },
                 link_exists: &le,
                 embed: &embed,
+                title: title_s.as_deref(),
                 max_image_rows: (tab.view.rect.h.saturating_sub(2) as u32).clamp(4, 40),
                 epoch,
             },
@@ -786,6 +801,15 @@ impl App {
 
     // ------------------------------------------------------------------ events
     pub fn handle(&mut self, ev: Event) {
+        // the first real interaction ends the "pristine" just-opened rendering
+        let interacts = match &ev {
+            Event::Key(_) | Event::Paste(_) => self.overlay.is_none() && self.focus == Focus::Editor,
+            Event::Mouse(m) => m.kind == MouseKind::Press && self.editor_rect.contains(m.x as usize, m.y as usize),
+            _ => false,
+        };
+        if interacts && let Some(t) = self.tabs.get_mut(self.cur) {
+            t.view.pristine = false;
+        }
         match ev {
             Event::Key(k) => self.key(&k),
             Event::Mouse(m) => self.mouse(m),

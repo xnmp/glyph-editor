@@ -53,16 +53,20 @@ pub struct View {
     pub cw: usize,
     pub readable: usize,
     pub line_numbers: bool,
+    /// just opened, not yet interacted with: no syntax reveal
+    pub pristine: bool,
 }
 
 pub struct Env<'a> {
     pub layout: &'a Layout,
     pub ctx: Ctx<'a>,
+    /// false right after opening: render fully clean until the user interacts
+    pub reveal: bool,
 }
 
 pub fn rows_of(env: &Env, ed: &mut Editor, i: usize) -> Rc<Vec<VRow>> {
     let cur = ed.cursor;
-    let read = env.ctx.mode == Mode::Read;
+    let read = env.ctx.mode == Mode::Read || !env.reveal;
     let (doc, lines) = ed.parsed();
     let active_block = doc.infos.get(cur.line).and_then(|x| x.block);
     let ba = !read && doc.infos[i].block.is_some() && doc.infos[i].block == active_block;
@@ -76,7 +80,7 @@ pub fn line_height(env: &Env, ed: &mut Editor, i: usize) -> usize {
 
 impl View {
     pub fn new(mode: Mode) -> View {
-        View { top_line: 0, top_off: 0, mode, hits: vec![], rect: Rect::default(), cx0: 0, cw: 80, readable: 100, line_numbers: false }
+        View { top_line: 0, top_off: 0, mode, hits: vec![], rect: Rect::default(), cx0: 0, cw: 80, readable: 100, line_numbers: false, pristine: true }
     }
 
     /// Content width for a pane of width `w` (readable line length, centered).

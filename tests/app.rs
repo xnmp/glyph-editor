@@ -63,7 +63,7 @@ fn headings_use_text_sizing() {
 fn heading_images_without_text_sizing() {
     let mut caps = kitty_caps();
     caps.text_sizing = false;
-    let mut h = Harness::with_caps(80, 24, &[("a.md", "# Image Heading\nbody")], caps, Config { autosave: false, ..Config::default() });
+    let mut h = Harness::with_caps(80, 24, &[("a.md", "# Image Heading\nbody")], caps, Config { autosave: false, inline_title: false, ..Config::default() });
     h.keys("down");
     if h.app.images.has_font() {
         let ph = h.vt.placeholder_cells();
@@ -138,7 +138,7 @@ fn quick_switcher_and_create() {
     h.keys("ctrl+o");
     h.type_text("othnot");
     let s = h.frame();
-    assert!(s.contains("notes/Other Note"), "{s}");
+    assert!(s.contains("Other Note  notes"), "name with dim folder: {s}");
     h.keys("enter");
     assert_eq!(h.text(), "second");
     h.keys("ctrl+o");
@@ -236,7 +236,7 @@ fn images_via_classic_placements_crop_when_scrolled() {
     for i in 0..40 {
         body.push_str(&format!("line {i}\n"));
     }
-    let mut h = Harness::with_caps(80, 20, &[("a.md", &body)], caps, Config { autosave: false, ..Config::default() });
+    let mut h = Harness::with_caps(80, 20, &[("a.md", &body)], caps, Config { autosave: false, inline_title: false, ..Config::default() });
     png(&h.dir.join("big.png"), 200, 200);
     h.app.layout.clear();
     h.keys("down down");
@@ -432,7 +432,7 @@ fn no_graphics_terminal_emits_no_apc() {
     caps.graphics = false;
     caps.placeholders = false;
     caps.text_sizing = false;
-    let mut h = Harness::with_caps(80, 24, &[("a.md", "# Title\n![x](x.png)")], caps, Config { autosave: false, ..Config::default() });
+    let mut h = Harness::with_caps(80, 24, &[("a.md", "# Title\n![x](x.png)")], caps, Config { autosave: false, inline_title: false, ..Config::default() });
     png(&h.dir.join("x.png"), 10, 10);
     let out = h.app.render();
     assert!(!out.contains("\x1b_G"));
@@ -605,4 +605,46 @@ fn heading_size_ramp_uses_fractional_osc66() {
     let (bx, by, s) = h.vt.block_at(h.vt.cx, h.vt.cy).expect("cursor on a block");
     assert_eq!((bx, by, s), (h.vt.cx, h.vt.cy, 2));
     assert!(h.vt.cell(bx, by).text.starts_with('w'), "{:?}", h.vt.cell(bx, by).text);
+}
+
+#[test]
+fn inline_title_and_pristine_open() {
+    let cfg = Config { autosave: false, inline_title: true, ..Config::default() };
+    let mut h = Harness::with_caps(80, 24, &[("My Note.md", "# Heading\nbody **bold**")], kitty_caps(), cfg);
+    let s = h.frame();
+    // the note name is shown large above the text, and the freshly opened
+    // note renders clean (no "# " revealed although the cursor is on line 0)
+    // (row 0 is the tab bar, which also says "My Note")
+    let y = (1..24).find(|&y| h.vt.row(y).contains("My Note")).unwrap_or_else(|| panic!("{s}"));
+    let x = (0..80).find(|&x| h.vt.cell(x, y).text.starts_with('M')).unwrap();
+    assert_eq!(h.vt.cell(x, y).scale, 2);
+    assert!(!s.contains("# Heading"), "{s}");
+    assert!(s.contains("Heading"));
+    // first interaction reveals syntax under the cursor as usual
+    h.keys("end");
+    assert!(h.vt.text().contains("# Heading"));
+    // clicking the title puts the cursor on the first line; titles are not editable
+    h.click(x, y, 0);
+    assert_eq!(h.app.tabs[0].ed.cursor.line, 0);
+    assert_eq!(h.text(), "# Heading\nbody **bold**");
+}
+
+#[test]
+fn status_bar_counts_like_obsidian() {
+    let mut h = Harness::new(100, 24, &[("a.md", "one two three"), ("b.md", "see [[a]]"), ("c.md", "[[a]] again")]);
+    let s = h.frame();
+    let last = s.lines().last().unwrap().to_string();
+    assert!(last.contains("2 backlinks"), "{last}");
+    assert!(last.contains("3 words"));
+    assert!(last.contains("13 characters"));
+}
+
+#[test]
+fn palette_has_placeholder_and_footer() {
+    let mut h = Harness::new(100, 30, &[("a.md", "x")]);
+    h.keys("ctrl+p");
+    let s = h.frame();
+    assert!(s.contains("Select a command..."), "{s}");
+    assert!(s.contains("to navigate"));
+    assert!(s.contains("Ctrl+S"), "keycap hints");
 }

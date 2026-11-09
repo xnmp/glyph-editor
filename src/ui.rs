@@ -120,8 +120,8 @@ impl App {
         for y in r.y..r.y + r.h {
             cv.put(r.w as i32, y as i32, "│", Style::fg(th.border).with_bg(th.bg), self.w);
         }
-        let head = format!(" {} ", self.vault.root.file_name().map(|s| s.to_string_lossy().to_uppercase()).unwrap_or_default());
-        cv.put(r.x as i32, r.y as i32, &truncate(&head, r.w), Style::fg(th.muted).with_bg(bg.bg).bold(), r.x + r.w);
+        let head = self.vault.root.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        cv.put(r.x as i32 + 2, r.y as i32, &truncate(&head, r.w.saturating_sub(3)), Style::fg(th.fg).with_bg(bg.bg).bold(), r.x + r.w);
         let items = self.tree_items();
         let vis = r.h.saturating_sub(1);
         if self.focus == Focus::Files {
@@ -143,26 +143,39 @@ impl App {
             } else {
                 ("  ", name)
             };
-            let line = format!("{}{}{}", "  ".repeat(*depth), icon, label);
             let mut st = if *is_dir {
-                Style::fg(th.muted)
-            } else if is_md {
                 Style::fg(th.fg)
+            } else if is_md {
+                Style::fg(th.muted)
             } else {
                 Style::fg(th.faint)
             };
-            if current.as_ref() == Some(p) {
-                st = Style::fg(th.accent).bold();
+            let active = current.as_ref() == Some(p);
+            let focused = self.focus == Focus::Files && k == self.tree_sel;
+            // Obsidian: neutral highlight for the open file, accent ring for focus
+            let row_bg = if active || focused { if th.rgb { th.hover } else { Color::Default } } else { bg.bg };
+            if active {
+                st = Style::fg(th.fg);
             }
-            st = st.with_bg(bg.bg);
-            if self.focus == Focus::Files && k == self.tree_sel {
-                st = st.with_bg(th.selection);
-                if !th.rgb {
-                    st = st.reverse();
-                }
+            if focused && !th.rgb {
+                st = st.reverse();
             }
-            cv.fill(r.x, y, r.w, 1, st);
-            cv.put(r.x as i32 + 1, y as i32, &truncate(&line, r.w.saturating_sub(2)), st, r.x + r.w);
+            st = st.with_bg(row_bg);
+            cv.fill(r.x + 1, y, r.w.saturating_sub(2), 1, Style::bg(row_bg));
+            // indent guides under each ancestor folder
+            let guide = Style::fg(th.border).with_bg(row_bg);
+            for d in 0..*depth {
+                cv.put((r.x + 2 + 2 * d) as i32, y as i32, "│", guide, r.x + r.w);
+            }
+            let x0 = (r.x + 2 + 2 * depth) as i32;
+            let x = cv.put(x0, y as i32, icon, Style::fg(th.faint).with_bg(row_bg), r.x + r.w);
+            cv.put(
+                x,
+                y as i32,
+                &truncate(&label, (r.x + r.w).saturating_sub(x as usize + 1)),
+                if focused { st.with_fg(th.accent) } else { st },
+                (r.x + r.w).saturating_sub(1),
+            );
         }
     }
 
@@ -265,47 +278,70 @@ impl App {
         }
     }
 
+    /// Obsidian's status bar: right-aligned "N backlinks  N words  N characters".
     fn draw_status(&mut self, cv: &mut Canvas, nmatch: usize, cur_match: Option<usize>) {
         let th = self.theme.clone();
         let y = self.h - 1;
         let bg = self.chrome_bg();
         cv.fill(0, y, self.w, 1, bg.with_fg(th.muted));
         let (words, chars) = self.tabs[self.cur].ed.word_count();
+        let backlinks = if self.tabs[self.cur].ed.path.is_some() { Some(self.current_backlinks().len()) } else { None };
+        let autosave = self.config.autosave;
         let t = &self.tabs[self.cur];
-        let mode = match t.view.mode {
-            Mode::Live => "Live",
-            Mode::Source => "Source",
-            Mode::Read => "Reading",
-        };
-        let c = t.ed.cursor;
-        let col = crate::text::str_width(&t.ed.line(c.line)[..c.col]) + 1;
-        let saved = if t.ed.dirty() {
-            "● unsaved"
-        } else if t.ed.path.is_some() {
-            "✓ saved"
-        } else {
-            "untitled"
-        };
-        let sel = t.ed.selection().map(|(a, b)| {
-            let s = t.ed.buf.get(a, b);
-            format!("{} selected  ", s.chars().count())
-        });
-        let found = if nmatch > 0 { format!("{} of {nmatch}  ", cur_match.map_or(0, |m| m + 1)) } else { String::new() };
-        let right = format!("{}{found}{words} words  {chars} chars  Ln {}, Col {col}  {saved}  {mode} ", sel.unwrap_or_default(), c.line + 1);
-        let rx = self.w.saturating_sub(str_width(&right));
-        let left = match &self.status {
-            Some((m, _, err)) => (format!(" {m}"), if *err { Style::fg(th.red).bold() } else { Style::fg(th.fg) }),
-            None => {
-                let p = t.ed.path.as_ref().map(|p| self.vault.rel(p)).unwrap_or_else(|| "untitled".into());
-                let hint = if self.w > 120 { "   ·  Ctrl+P commands  Ctrl+O open  F1 help" } else { "" };
-                (format!(" {p}{hint}"), Style::fg(th.faint))
+        let mut parts: Vec<(String, Style)> = vec![];
+        let muted = Style::fg(th.muted).with_bg(bg.bg);
+        if let Some((a, b)) = t.ed.selection() {
+            parts.push((format!("{} selected", t.ed.buf.get(a, b).chars().count()), muted));
+        }
+        if nmatch > 0 {
+            parts.push((format!("{} of {nmatch}", cur_match.map_or(0, |m| m + 1)), muted));
+        }
+        if let Some(n) = backlinks {
+            parts.push((format!("{n} backlink{}", if n == 1 { "" } else { "s" }), muted));
+        }
+        let fmt = |n: usize| {
+            let s = n.to_string();
+            let mut out = String::new();
+            for (i, c) in s.chars().enumerate() {
+                if i > 0 && (s.len() - i) % 3 == 0 {
+                    out.push(',');
+                }
+                out.push(c);
             }
+            out
         };
-        cv.put(0, y as i32, &truncate(&left.0, rx.saturating_sub(1)), left.1.with_bg(bg.bg), rx);
-        cv.put(rx as i32, y as i32, &right, Style::fg(th.muted).with_bg(bg.bg), self.w);
-        // mode in accent
-        let mx = self.w as i32 - str_width(mode) as i32 - 1;
-        cv.put(mx, y as i32, mode, Style::fg(th.accent).bold().with_bg(bg.bg), self.w);
+        parts.push((format!("{} word{}", fmt(words), if words == 1 { "" } else { "s" }), muted));
+        parts.push((format!("{} character{}", fmt(chars), if chars == 1 { "" } else { "s" }), muted));
+        if t.view.mode == Mode::Source {
+            let c = t.ed.cursor;
+            let col = crate::text::str_width(&t.ed.line(c.line)[..c.col]) + 1;
+            parts.push((format!("Ln {}, Col {col}", c.line + 1), muted));
+        }
+        if !autosave {
+            if t.ed.dirty() {
+                parts.push(("● unsaved".into(), Style::fg(th.accent).with_bg(bg.bg)));
+            } else if t.ed.path.is_some() {
+                parts.push(("✓ saved".into(), muted));
+            }
+        }
+        match t.view.mode {
+            Mode::Read => parts.push(("Reading".into(), Style::fg(th.accent).bold().with_bg(bg.bg))),
+            Mode::Source => parts.push(("Source".into(), Style::fg(th.accent).bold().with_bg(bg.bg))),
+            Mode::Live => {}
+        }
+        let total: usize = parts.iter().map(|p| str_width(&p.0)).sum::<usize>() + 3 * parts.len().saturating_sub(1) + 2;
+        let rx = self.w.saturating_sub(total);
+        let mut x = rx as i32 + 1;
+        for (k, (t, st)) in parts.iter().enumerate() {
+            if k > 0 {
+                x += 3;
+            }
+            x = cv.put(x, y as i32, t, *st, self.w);
+        }
+        if let Some((m, _, err)) = &self.status {
+            let st = if *err { Style::fg(th.red).bold() } else { Style::fg(th.fg) };
+            cv.put(1, y as i32, &truncate(m, rx.saturating_sub(2)), st.with_bg(bg.bg), rx);
+        }
     }
 
     fn draw_find(&mut self, cv: &mut Canvas, nmatch: usize, cur_match: Option<usize>) {
@@ -360,101 +396,169 @@ impl App {
         let th = self.theme.clone();
         let Some(c) = &self.completion else { return };
         let Some((cx, cy)) = cv.cursor else { return };
-        let items = if c.items.is_empty() { vec![format!("Create “{}”", c.query)] } else { c.items.clone() };
-        let w = items.iter().map(|s| str_width(s)).max().unwrap_or(10).clamp(16, 50) + 2;
-        let h = items.len();
-        let below = cy + 1 + h < self.h - 1;
+        // (name, folder) like Obsidian's link suggester
+        let items: Vec<(String, String)> = if c.items.is_empty() {
+            vec![(format!("Create “{}”", c.query), String::new())]
+        } else {
+            c.items
+                .iter()
+                .map(|it| match it.rfind('/') {
+                    Some(i) => (it[i + 1..].to_string(), it[..i].to_string()),
+                    None => (it.clone(), String::new()),
+                })
+                .collect()
+        };
+        let w = items.iter().map(|(n, d)| str_width(n) + if d.is_empty() { 0 } else { str_width(d) + 2 }).max().unwrap_or(10).clamp(18, 56) + 4;
+        let edges = if th.rgb { 2 } else { 0 };
+        let h = items.len() + edges;
+        let below = cy + 1 + h < self.h.saturating_sub(1);
         let y0 = if below { cy + 1 } else { cy.saturating_sub(h) };
-        let x0 = cx.min(self.w.saturating_sub(w + 1));
-        let panel = if th.rgb { th.panel.blend(th.fg_or(th.muted), 0.04) } else { Color::Default };
-        for (k, it) in items.iter().enumerate() {
+        let x0 = cx.saturating_sub(2).min(self.w.saturating_sub(w + 1));
+        let r = Rect { x: x0, y: y0, w: w.min(self.w), h };
+        let top = if th.rgb { self.draw_box(cv, r, "") } else { y0 };
+        let panel = if th.rgb { th.panel } else { Color::Default };
+        for (k, (name, dir)) in items.iter().enumerate() {
             let sel = k == c.sel && !c.items.is_empty();
-            let mut st = Style::fg(if c.items.is_empty() { th.faint } else { th.fg }).with_bg(panel);
-            if sel {
-                st = st.with_bg(th.selection);
-                if !th.rgb {
-                    st = st.reverse();
-                }
+            let rbg = if sel { th.hover } else { panel };
+            let mut st = Style::fg(if c.items.is_empty() { th.faint } else { th.fg }).with_bg(rbg);
+            if sel && !th.rgb {
+                st = st.reverse();
             }
-            cv.fill(x0, y0 + k, w, 1, st);
-            cv.put(x0 as i32 + 1, (y0 + k) as i32, &truncate(it, (w).saturating_sub(2)), st, x0 + w);
+            let y = top + k;
+            cv.fill(r.x + 1, y, r.w.saturating_sub(2), 1, Style::bg(rbg));
+            let x = cv.put(r.x as i32 + 2, y as i32, &truncate(name, r.w.saturating_sub(4)), st, (r.x + r.w).saturating_sub(1));
+            if !dir.is_empty() {
+                cv.put(
+                    x + 2,
+                    y as i32,
+                    &truncate(dir, (r.x + r.w).saturating_sub(x as usize + 4)),
+                    Style::fg(th.faint).with_bg(rbg),
+                    (r.x + r.w).saturating_sub(1),
+                );
+            }
         }
     }
 
-    fn draw_box(&self, cv: &mut Canvas, r: Rect, title: &str) {
+    /// A floating panel. With known colours it is a tinted panel with
+    /// rounded half-height edges (like Obsidian's modals); otherwise a box.
+    /// Returns the first content row.
+    fn draw_box(&self, cv: &mut Canvas, r: Rect, title: &str) -> usize {
         let th = &self.theme;
-        let bg = if th.rgb { th.panel } else { Color::Default };
-        let bst = Style::fg(th.border).with_bg(bg);
-        cv.fill(r.x, r.y, r.w, r.h, Style::bg(bg));
+        if r.h < 2 || r.w < 4 {
+            return r.y;
+        }
+        if th.rgb {
+            let bg = th.panel;
+            cv.fill(r.x, r.y + 1, r.w, r.h - 2, Style::bg(bg));
+            let inner = r.w - 2;
+            cv.put(r.x as i32, r.y as i32, &format!("▗{}▖", "▄".repeat(inner)), Style::fg(bg), self.w);
+            cv.put(r.x as i32, (r.y + r.h - 1) as i32, &format!("▝{}▘", "▀".repeat(inner)), Style::fg(bg), self.w);
+            if !title.is_empty() {
+                cv.put(r.x as i32 + 3, r.y as i32 + 1, title, Style::fg(th.muted).with_bg(bg).bold(), r.x + r.w - 1);
+                return r.y + 2;
+            }
+            return r.y + 1;
+        }
+        let bst = Style::fg(th.border);
+        cv.fill(r.x, r.y, r.w, r.h, Style::new());
         let horiz = "─".repeat(r.w.saturating_sub(2));
         cv.put(r.x as i32, r.y as i32, &format!("╭{horiz}╮"), bst, self.w);
-        cv.put(r.x as i32, (r.y + (r.h).saturating_sub(1)) as i32, &format!("╰{horiz}╯"), bst, self.w);
-        for y in r.y + 1..r.y + (r.h).saturating_sub(1) {
+        cv.put(r.x as i32, (r.y + r.h - 1) as i32, &format!("╰{horiz}╯"), bst, self.w);
+        for y in r.y + 1..r.y + r.h - 1 {
             cv.put(r.x as i32, y as i32, "│", bst, self.w);
-            cv.put((r.x + (r.w).saturating_sub(1)) as i32, y as i32, "│", bst, self.w);
+            cv.put((r.x + r.w - 1) as i32, y as i32, "│", bst, self.w);
         }
         if !title.is_empty() {
-            cv.put(r.x as i32 + 2, r.y as i32, &format!(" {title} "), Style::fg(th.muted).with_bg(bg).bold(), self.w);
+            cv.put(r.x as i32 + 2, r.y as i32, &format!(" {title} "), Style::fg(th.muted).bold(), self.w);
         }
+        r.y + 1
     }
 
+    /// A key binding rendered as a keycap chip.
+    fn chip(&self, cv: &mut Canvas, x: i32, y: usize, k: &str, bg: Color, clip: usize) -> i32 {
+        let th = &self.theme;
+        let st = if th.rgb { Style::fg(th.muted).with_bg(th.hover) } else { Style::fg(th.muted) };
+        let x = cv.put(x, y as i32, &format!(" {k} "), st, clip);
+        cv.put(x, y as i32, " ", Style::bg(bg), clip)
+    }
+
+    /// Obsidian-style prompt: input with placeholder, results, key-hint footer.
+    /// rows: (label, dim detail, key hint, matched char indices, label style)
+    #[allow(clippy::too_many_arguments)]
     fn draw_list_overlay(
         &mut self,
         cv: &mut Canvas,
-        title: &str,
-        prompt: &str,
+        placeholder: &str,
         input: &crate::app::LineInput,
-        rows: Vec<(String, String, Vec<usize>, Style)>,
+        rows: Vec<(String, String, String, Vec<usize>, Style)>,
         sel: usize,
         empty: &str,
+        footer: &[(&str, &str)],
     ) {
         let th = self.theme.clone();
-        let w = (self.w.saturating_sub(4)).min(76).max(20).min(self.w);
-        let max_items = (self.h.saturating_sub(8)).clamp(3, 14);
+        let w = self.w.saturating_sub(4).min(78).max(20).min(self.w);
+        if w < 12 || self.h < 8 {
+            return; // too small to show a prompt; keys still work
+        }
+        let max_items = self.h.saturating_sub(10).clamp(1, 12);
         let n = rows.len().min(max_items);
-        let h = 4 + n.max(1);
-        let r = Rect { x: (self.w - w) / 2, y: (self.h / 6).max(1).min(self.h.saturating_sub(h)), w, h };
-        self.draw_box(cv, r, title);
+        let h = 6 + n.max(1);
+        let r = Rect { x: (self.w - w) / 2, y: (self.h / 8).max(1).min(self.h.saturating_sub(h)), w, h };
+        let iy = self.draw_box(cv, r, "");
         self.overlay_hits.push((r, usize::MAX));
         let bg = if th.rgb { th.panel } else { Color::Default };
-        // input
-        let iy = r.y + 1;
-        cv.put(r.x as i32 + 2, iy as i32, prompt, Style::fg(th.accent).bold().with_bg(bg), self.w);
-        let ix = r.x + 2 + str_width(prompt) + 1;
-        let iw = r.w.saturating_sub(str_width(prompt) + 5);
-        cv.put(ix as i32, iy as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
+        let right = r.x + r.w - 2;
+        // input row
+        let ix = r.x + 3;
+        let iw = r.w.saturating_sub(6);
+        if input.text.is_empty() {
+            cv.put(ix as i32, iy as i32, placeholder, Style::fg(th.faint).with_bg(bg), right);
+        } else {
+            cv.put(ix as i32, iy as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), right);
+        }
         cv.cursor = Some((ix + str_width(&input.text[..input.cur]).min(iw), iy));
         cv.cursor_shape = 6;
         let sep = "─".repeat(r.w.saturating_sub(2));
-        cv.put(r.x as i32 + 1, (iy + 1) as i32, &sep, Style::fg(th.border).with_bg(bg), self.w);
+        let sep_st = Style::fg(if th.rgb { th.hover } else { th.border }).with_bg(bg);
+        cv.put(r.x as i32 + 1, (iy + 1) as i32, &sep, sep_st, r.x + r.w - 1);
+        let list_y = iy + 2;
         if rows.is_empty() {
-            cv.put(r.x as i32 + 3, (iy + 2) as i32, empty, Style::fg(th.faint).italic().with_bg(bg), r.x + (r.w).saturating_sub(1));
-            return;
+            cv.put(ix as i32, list_y as i32, empty, Style::fg(th.faint).with_bg(bg), right);
         }
         let start = if sel >= n { sel + 1 - n } else { 0 };
-        for (k, (label, hint, m, st)) in rows.iter().enumerate().skip(start).take(n) {
-            let y = iy + 2 + k - start;
+        for (k, (label, detail, hint, m, st)) in rows.iter().enumerate().skip(start).take(n) {
+            let y = list_y + k - start;
             let selected = k == sel;
-            let rbg = if selected { th.selection } else { bg };
+            let rbg = if selected { th.hover } else { bg };
             let mut base = st.with_bg(rbg);
             if selected && !th.rgb {
                 base = base.reverse();
             }
-            cv.fill(r.x + 1, y, (r.w).saturating_sub(2), 1, base);
-            let hw = str_width(hint);
-            let lw = r.w.saturating_sub(6 + hw);
-            let shown = truncate(label, lw);
-            // highlight fuzzy-matched chars
-            let mut x = r.x + 3;
+            cv.fill(r.x + 1, y, r.w.saturating_sub(2), 1, Style::bg(rbg));
+            let hw = if hint.is_empty() { 0 } else { str_width(hint) + 3 };
+            let avail = r.w.saturating_sub(6 + hw);
+            let shown = truncate(label, avail);
+            let mut x = ix;
             for (ci, ch) in shown.chars().enumerate() {
-                let hl = m.contains(&ci);
-                let s = if hl { base.with_fg(th.accent).bold() } else { base };
-                x = cv.put(x as i32, y as i32, &ch.to_string(), s, r.x + (r.w).saturating_sub(2)) as usize;
+                let s = if m.contains(&ci) { base.with_fg(th.accent).bold() } else { base };
+                x = cv.put(x as i32, y as i32, &ch.to_string(), s, right) as usize;
+            }
+            if !detail.is_empty() && x + 3 < ix + avail {
+                let d = truncate(detail, (ix + avail).saturating_sub(x + 2));
+                cv.put(x as i32 + 2, y as i32, &d, Style::fg(th.faint).with_bg(rbg), right);
             }
             if !hint.is_empty() {
-                cv.put((r.x + (r.w).saturating_sub(2)) as i32 - hw as i32, y as i32, hint, Style::fg(th.faint).with_bg(rbg), r.x + (r.w).saturating_sub(1));
+                self.chip(cv, right as i32 - str_width(hint) as i32 - 2, y, hint, rbg, right + 1);
             }
-            self.overlay_hits.insert(0, (Rect { x: r.x + 1, y, w: (r.w).saturating_sub(2), h: 1 }, k));
+            self.overlay_hits.insert(0, (Rect { x: r.x + 1, y, w: r.w.saturating_sub(2), h: 1 }, k));
+        }
+        // footer with key hints
+        let fy = r.y + r.h - 2;
+        cv.put(r.x as i32 + 1, fy as i32 - 1, &sep, sep_st, r.x + r.w - 1);
+        let mut x = ix as i32;
+        for (k, what) in footer {
+            x = cv.put(x, fy as i32, k, Style::fg(th.muted).with_bg(bg).bold(), right);
+            x = cv.put(x + 1, fy as i32, what, Style::fg(th.faint).with_bg(bg), right) + 3;
         }
     }
 
@@ -467,64 +571,95 @@ impl App {
                     .palette_items(&input.text)
                     .into_iter()
                     .map(|(c, m)| {
-                        (commands::title(c).to_string(), commands::keys_of(c).first().map(|k| commands::pretty(k)).unwrap_or_default(), m, Style::fg(th.fg))
+                        (
+                            commands::title(c).to_string(),
+                            String::new(),
+                            commands::keys_of(c).first().map(|k| commands::pretty(k)).unwrap_or_default(),
+                            m,
+                            Style::fg(th.fg),
+                        )
                     })
                     .collect();
-                self.draw_list_overlay(cv, "Commands", "›", input, rows, *sel, "No matching commands");
+                self.draw_list_overlay(
+                    cv,
+                    "Select a command...",
+                    input,
+                    rows,
+                    *sel,
+                    "No commands found.",
+                    &[("↑↓", "to navigate"), ("↵", "to use"), ("esc", "to dismiss")],
+                );
             }
             Overlay::Switcher { input, sel } => {
                 let rows = self
                     .switcher_items(&input.text)
                     .into_iter()
                     .map(|(l, p, m)| {
-                        let st = if p.is_none() { Style::fg(th.accent).italic() } else { Style::fg(th.fg) };
-                        let label = l.strip_suffix(".md").map(String::from).unwrap_or(l);
-                        (label, if p.is_none() { "↵ create".into() } else { String::new() }, m, st)
+                        if p.is_none() {
+                            return (l, String::new(), "Enter".to_string(), vec![], Style::fg(th.accent));
+                        }
+                        // name first, folder dimmed after it (Obsidian's switcher)
+                        let l = l.strip_suffix(".md").map(String::from).unwrap_or(l);
+                        let (dir, name) = match l.rfind('/') {
+                            Some(i) => (l[..i].to_string(), l[i + 1..].to_string()),
+                            None => (String::new(), l.clone()),
+                        };
+                        let off = l.chars().count() - name.chars().count();
+                        let m: Vec<usize> = m.into_iter().filter(|&i| i >= off).map(|i| i - off).collect();
+                        (name, dir, String::new(), m, Style::fg(th.fg))
                     })
                     .collect();
-                self.draw_list_overlay(cv, "Open note", "›", input, rows, *sel, "Type to search notes");
+                self.draw_list_overlay(
+                    cv,
+                    "Find or create a note...",
+                    input,
+                    rows,
+                    *sel,
+                    "No notes found.",
+                    &[("↑↓", "to navigate"), ("↵", "to open"), ("ctrl ↵", "new tab"), ("esc", "to dismiss")],
+                );
             }
             Overlay::Search { input, sel, results, dirty } => {
                 let rows = results
                     .iter()
                     .map(|(p, ln, _, text)| {
-                        let stem = p.with_extension("").to_string_lossy().to_string();
-                        (format!("{}  {}", stem, text.trim()), format!(":{}", ln + 1), vec![], Style::fg(th.fg))
+                        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        (stem, crate::markdown::inline_text(text.trim()), format!("{}", ln + 1), vec![], Style::fg(th.fg).bold())
                     })
                     .collect();
-                let title = if *dirty { "Search (↵ to run)" } else { "Search notes" };
-                self.draw_list_overlay(cv, title, "⌕", input, rows, *sel, if input.text.is_empty() { "Type to search all notes" } else { "No results" });
+                let empty = if input.text.is_empty() {
+                    "Type to search all notes."
+                } else if *dirty {
+                    "Press Enter to search."
+                } else {
+                    "No matches."
+                };
+                self.draw_list_overlay(cv, "Search all notes...", input, rows, *sel, empty, &[("↑↓", "to navigate"), ("↵", "to open"), ("esc", "to dismiss")]);
             }
             Overlay::Prompt { title, input, .. } => {
                 let w = self.w.saturating_sub(4).min(60).max(20).min(self.w);
-                let r = Rect { x: (self.w - w) / 2, y: (self.h / 4).max(1), w, h: 3 };
-                self.draw_box(cv, r, title);
+                let r = Rect { x: (self.w - w) / 2, y: (self.h / 4).max(1), w, h: 4 };
+                let y = self.draw_box(cv, r, title);
                 self.overlay_hits.push((r, usize::MAX));
                 let bg = if th.rgb { th.panel } else { Color::Default };
-                cv.put(r.x as i32 + 2, r.y as i32 + 1, "›", Style::fg(th.accent).bold().with_bg(bg), self.w);
-                cv.put(
-                    r.x as i32 + 4,
-                    r.y as i32 + 1,
-                    &truncate(&input.text, (w).saturating_sub(6)),
-                    Style::fg(th.fg).with_bg(bg),
-                    r.x + (r.w).saturating_sub(1),
-                );
-                cv.cursor = Some((r.x + 4 + str_width(&input.text[..input.cur]).min((w).saturating_sub(6)), r.y + 1));
+                let iw = w.saturating_sub(6);
+                cv.put(r.x as i32 + 3, y as i32, &truncate(&input.text, iw), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
+                cv.cursor = Some((r.x + 3 + str_width(&input.text[..input.cur]).min(iw), y));
             }
             Overlay::Confirm { msg, .. } => {
                 let w = (str_width(msg) + 6).min(self.w.saturating_sub(2));
                 let r = Rect { x: (self.w - w) / 2, y: (self.h / 3).max(1), w, h: 3 };
-                self.draw_box(cv, r, "Confirm");
+                let y = self.draw_box(cv, r, "");
                 self.overlay_hits.push((r, usize::MAX));
                 let bg = if th.rgb { th.panel } else { Color::Default };
-                cv.put(r.x as i32 + 3, r.y as i32 + 1, &truncate(msg, (w).saturating_sub(4)), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
+                cv.put(r.x as i32 + 3, y as i32, &truncate(msg, (w).saturating_sub(4)), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
                 cv.cursor = None;
             }
             Overlay::Help { scroll } => {
                 let w = self.w.saturating_sub(4).min(84).max(30).min(self.w);
                 let h = self.h.saturating_sub(4).max(6).min(self.h);
                 let r = Rect { x: (self.w - w) / 2, y: 2.min(self.h.saturating_sub(h)), w, h };
-                self.draw_box(cv, r, "glyph — key bindings (Esc to close)");
+                let y0 = self.draw_box(cv, r, "Hotkeys  ·  esc to close");
                 self.overlay_hits.push((r, usize::MAX));
                 let bg = if th.rgb { th.panel } else { Color::Default };
                 let mut lines: Vec<(String, String)> = vec![];
@@ -551,14 +686,14 @@ impl App {
                 ] {
                     lines.push((t.to_string(), k.to_string()));
                 }
-                let vis = h.saturating_sub(2);
+                let vis = (r.y + h).saturating_sub(y0 + 1);
                 let max_scroll = lines.len().saturating_sub(vis);
                 let s = (*scroll).min(max_scroll);
                 if let Some(Overlay::Help { scroll }) = Some(&ov) {
                     let _ = scroll;
                 }
                 for (k, (t, keys)) in lines.iter().skip(s).take(vis).enumerate() {
-                    let y = r.y + 1 + k;
+                    let y = y0 + k;
                     cv.put(r.x as i32 + 3, y as i32, &truncate(t, w / 2), Style::fg(th.fg).with_bg(bg), r.x + (r.w).saturating_sub(1));
                     cv.put(
                         (r.x + w / 2 + 1) as i32,
