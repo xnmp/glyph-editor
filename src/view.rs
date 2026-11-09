@@ -71,7 +71,7 @@ pub fn rows_of(env: &Env, ed: &mut Editor, i: usize) -> Rc<Vec<VRow>> {
     let active_block = doc.infos.get(cur.line).and_then(|x| x.block);
     let ba = !read && doc.infos[i].block.is_some() && doc.infos[i].block == active_block;
     let c = if i == cur.line && !read { Some(cur.col) } else { None };
-    env.layout.rows(&env.ctx, lines, doc, i, c, ba)
+    env.layout.rows(&env.ctx, lines, doc, i, c, ba.then_some(cur))
 }
 
 pub fn line_height(env: &Env, ed: &mut Editor, i: usize) -> usize {
@@ -261,7 +261,7 @@ impl View {
             if delta > 0 {
                 let mut k = ri + 1;
                 loop {
-                    while k < rows.len() && !rows[k].cursorable {
+                    while k < rows.len() && !enterable(&rows, k, x) {
                         k += 1;
                     }
                     if k < rows.len() {
@@ -279,7 +279,7 @@ impl View {
             } else {
                 let mut k = ri as isize - 1;
                 loop {
-                    while k >= 0 && !rows[k as usize].cursorable {
+                    while k >= 0 && !enterable(&rows, k as usize, x) {
                         k -= 1;
                     }
                     if k >= 0 {
@@ -445,6 +445,14 @@ impl View {
                         }
                         let a = a.max(row.a);
                         let b = b.min(row.b);
+                        if !row.cells.is_empty() {
+                            for (xa, xb) in layout::cell_spans(row, a, b) {
+                                for dy in 0..row.height() {
+                                    cv.restyle(self.cx0 + xa, sy + dy, xb - xa, |s| s.with_bg(bg));
+                                }
+                            }
+                            return;
+                        }
                         let xa = layout::x_of_col(row, &line, a);
                         let xb = if b >= row.b && !row.last { row.end_x as usize } else { layout::x_of_col(row, &line, b) };
                         let w = xb.saturating_sub(xa);
@@ -564,9 +572,22 @@ impl View {
     }
 }
 
+/// Whether Up/Down with goal `x` stops on visual row `k` (a line's first
+/// cursorable row always can).
+fn enterable(rows: &[VRow], k: usize, x: usize) -> bool {
+    rows[k].cursorable && (layout::row_reaches(&rows[k], x) || !rows[..k].iter().any(|r| r.cursorable))
+}
+
 /// Which visual row holds the cursor at `col`.
 pub fn cursor_row_index(rows: &[VRow], line: &str, col: usize) -> usize {
     let _ = line;
+    if rows.iter().any(|r| r.cursorable && !r.cells.is_empty()) {
+        // grid table: the row holding this caret stop; at a wrap the later row
+        let grid = || rows.iter().enumerate().filter(|(_, r)| r.cursorable && !r.cells.is_empty());
+        let dist = |r: &VRow| r.cells.iter().flat_map(|c| &c.stops).map(|s| s.0.abs_diff(col)).min().unwrap_or(usize::MAX);
+        let best = grid().map(|(k, r)| (dist(r), std::cmp::Reverse(k))).min();
+        return best.map_or(0, |(_, std::cmp::Reverse(k))| k);
+    }
     let mut best = None;
     for (k, r) in rows.iter().enumerate() {
         if !r.cursorable {

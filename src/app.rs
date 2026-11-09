@@ -18,9 +18,21 @@ use crate::theme::Theme;
 use crate::vault::{self, Vault};
 use crate::view::{Env, Rect, View};
 
+/// Rows scrolled per wheel event. Terminals send one event per notch, and many
+/// per touchpad swipe (kitty, Ghostty), so more than one row overshoots.
+const WHEEL_ROWS: isize = 1;
+
 pub struct Tab {
     pub ed: Editor,
     pub view: View,
+}
+
+impl Tab {
+    /// Switch view mode; the editor's table keys follow (grids outside source mode).
+    pub fn set_mode(&mut self, m: Mode) {
+        self.view.mode = m;
+        self.ed.grid_tables = m != Mode::Source;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -626,7 +638,7 @@ impl App {
             }
             let mode = t.view.mode;
             self.tabs[self.cur] = tab;
-            self.tabs[self.cur].view.mode = if mode == Mode::Source { Mode::Source } else { Mode::Live };
+            self.tabs[self.cur].set_mode(if mode == Mode::Source { Mode::Source } else { Mode::Live });
         }
         self.after_open();
     }
@@ -643,6 +655,9 @@ impl App {
                     ed.cursor = Pos::new(l, 0);
                 }
             }
+            // a document can open with the caret on a table's pipes
+            let c = ed.cursor;
+            ed.set_cursor(c, false);
         }
         if let Some(p) = self.tabs[self.cur].ed.path.clone() {
             self.recent.retain(|r| *r != p);
@@ -1111,7 +1126,8 @@ impl App {
         let read = self.tabs[self.cur].view.mode == Mode::Read;
         let shift = k.mods & SHIFT != 0;
         let base = name.trim_start_matches("shift+");
-        let page = self.editor_rect.h.saturating_sub(2).max(1) as isize;
+        // PageUp/PageDown move half a screen, so the reader keeps their place
+        let page = (self.editor_rect.h / 2).max(1) as isize;
         if read {
             let d = match base {
                 "up" | "k" => -1,
@@ -1854,13 +1870,13 @@ impl App {
             NewNote => self.new_note("Untitled"),
             ToggleReading => {
                 let t = self.tab();
-                t.view.mode = if t.view.mode == Mode::Read { Mode::Live } else { Mode::Read };
+                t.set_mode(if t.view.mode == Mode::Read { Mode::Live } else { Mode::Read });
                 let m = t.view.mode;
                 self.set_status(if m == Mode::Read { "Reading view" } else { "Live preview" });
             }
             ToggleSource => {
                 let t = self.tab();
-                t.view.mode = if t.view.mode == Mode::Source { Mode::Live } else { Mode::Source };
+                t.set_mode(if t.view.mode == Mode::Source { Mode::Live } else { Mode::Source });
                 let m = t.view.mode;
                 self.set_status(if m == Mode::Source { "Source mode" } else { "Live preview" });
             }
@@ -2091,9 +2107,9 @@ impl App {
         }
         if m.kind == MouseKind::Wheel {
             let d: isize = if m.button == 0 {
-                -3
+                -WHEEL_ROWS
             } else if m.button == 1 {
-                3
+                WHEEL_ROWS
             } else {
                 0
             };

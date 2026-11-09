@@ -256,7 +256,9 @@ fn images_via_classic_placements_crop_when_scrolled() {
     let p = h.vt.placements[0].clone();
     assert_eq!(p.src, (0, 0, 200, 200));
     // scroll by 3 rows: the placement is re-issued cropped
-    h.wheel(10, 10, true);
+    for _ in 0..3 {
+        h.wheel(10, 10, true);
+    }
     assert_eq!(h.vt.placements.len(), 1);
     let p = &h.vt.placements[0];
     assert_eq!(p.y, 1);
@@ -770,4 +772,216 @@ fn typeset_selection_and_search_render_without_cell_text() {
     assert!(h.vt.placeholder_cells().len() > 20);
     h.keys("escape ctrl+a");
     assert_eq!(h.app.tabs[0].ed.selected_text().as_deref(), Some("find the needle here\nanother needle"));
+}
+
+// ---------------------------------------------------------------- grid tables
+
+const TABLE: &str = "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+
+#[test]
+fn tables_stay_a_grid_while_editing() {
+    let mut h = Harness::new(80, 24, &[("a.md", TABLE)]);
+    h.keys("down down");
+    let s = h.frame();
+    assert!(s.contains("│ a │ b │"), "{s}");
+    assert!(!s.contains("| a | b |"), "{s}");
+    // the caret is in the first cell, so typing goes into it
+    h.type_text("x");
+    assert_eq!(h.text(), "intro\n\n| xa | b |\n|---|---|\n| 1 | 2 |");
+    let s = h.frame();
+    assert!(s.contains("│ xa │ b │"), "{s}");
+    // the hardware cursor sits right after the typed character
+    let (x, y) = h.vt.find("xa").unwrap();
+    assert_eq!((h.vt.cx, h.vt.cy), (x + 1, y));
+}
+
+#[test]
+fn table_arrows_move_between_cells_and_skip_the_alignment_row() {
+    let mut h = Harness::new(80, 24, &[("a.md", TABLE)]);
+    h.keys("down down end");
+    // Right from the end of a cell enters the next one
+    h.keys("left right right");
+    h.type_text("R");
+    assert_eq!(h.text(), "intro\n\n| a | Rb |\n|---|---|\n| 1 | 2 |");
+    // past the last cell: next row's first cell, over the alignment row
+    h.keys("end right");
+    h.type_text("D");
+    assert_eq!(h.text(), "intro\n\n| a | Rb |\n|---|---|\n| D1 | 2 |");
+    // Left from a row's first cell goes to the previous row's last cell
+    h.keys("home left");
+    h.type_text("L");
+    assert_eq!(h.text(), "intro\n\n| a | RbL |\n|---|---|\n| D1 | 2 |");
+    // Down from the header lands in the same column of the body
+    h.keys("down");
+    h.type_text("V");
+    assert!(h.text().ends_with("| D1 | V2 |") || h.text().ends_with("| D1 | 2V |"), "{}", h.text());
+}
+
+#[test]
+fn table_enter_moves_down_and_adds_rows() {
+    let mut h = Harness::new(80, 24, &[("a.md", TABLE)]);
+    // End stays in the cell; Enter goes to the same column one row down
+    h.keys("down down right right end enter");
+    h.type_text("y");
+    assert_eq!(h.text(), "intro\n\n| a | b |\n|---|---|\n| 1 | 2y |");
+    // Enter on the last row appends a row and stays in the column
+    h.keys("enter");
+    h.type_text("z");
+    assert_eq!(h.text(), "intro\n\n| a | b |\n|---|---|\n| 1 | 2y |\n| | z|");
+    let s = h.frame();
+    assert!(s.contains("│ z  │"), "{s}");
+}
+
+#[test]
+fn table_backspace_and_delete_keep_cell_boundaries() {
+    let mut h = Harness::new(80, 24, &[("a.md", TABLE)]);
+    h.keys("down down end home");
+    // at the start of a cell: nothing to delete
+    h.keys("backspace");
+    assert_eq!(h.text(), TABLE);
+    h.keys("right right end delete");
+    assert_eq!(h.text(), TABLE);
+    // a literal pipe is escaped
+    h.type_text("|");
+    assert_eq!(h.text(), "intro\n\n| a | b\\| |\n|---|---|\n| 1 | 2 |");
+    // shown as a plain pipe once the caret leaves it (revealed while touching)
+    assert!(h.frame().contains("│ a │ b\\| │"));
+    h.keys("down");
+    let s = h.frame();
+    assert!(s.contains("│ a │ b| │"), "{s}");
+    // Backspace at the start of an empty row removes the row
+    h.keys("end enter");
+    assert_eq!(h.text().lines().count(), 6);
+    h.keys("backspace");
+    assert_eq!(h.text(), "intro\n\n| a | b\\| |\n|---|---|\n| 1 | 2 |");
+    h.type_text("!");
+    assert!(h.text().ends_with("| 1 | 2! |"), "{}", h.text());
+}
+
+#[test]
+fn table_click_places_caret_in_the_cell() {
+    let mut h = Harness::new(80, 24, &[("a.md", "intro\n\n| aaa | bbb |\n|---|---|\n| 111 | 222 |")]);
+    h.frame();
+    let (x, y) = h.vt.find("222").unwrap();
+    h.click(x + 1, y, 0);
+    h.type_text("_");
+    assert!(h.text().ends_with("| 111 | 2_22 |"), "{}", h.text());
+    // clicking the padding right of a cell lands at its end
+    let (x, y) = h.vt.find("111").unwrap();
+    h.click(x + 4, y, 0);
+    h.type_text("+");
+    assert!(h.text().ends_with("| 111+ | 2_22 |"), "{}", h.text());
+}
+
+#[test]
+fn table_wrapped_cells_are_editable_on_every_row() {
+    let long = "alpha beta gamma delta epsilon zeta eta theta";
+    let mut h = Harness::new(40, 24, &[("a.md", &format!("intro\n\n| k | v |\n|---|---|\n| x | {long} |\nafter"))]);
+    let s = h.frame();
+    let (x, y) = h.vt.find("theta").unwrap_or_else(|| panic!("{s}"));
+    let (_, y0) = h.vt.find("alpha").unwrap();
+    assert!(y > y0, "cell should wrap: {s}");
+    // click the last word on its wrapped row and type there
+    h.click(x + 5, y, 0);
+    h.type_text("!");
+    assert!(h.text().contains("theta! |"), "{}", h.text());
+    let (tx, ty) = h.vt.find("theta!").unwrap();
+    assert_eq!((h.vt.cx, h.vt.cy), (tx + 6, ty));
+    // Up from the short cell's row skips the other cell's wrapped rows
+    h.keys("ctrl+home down down down");
+    h.type_text("Q");
+    assert!(h.text().contains("| Qx |"), "{}", h.text());
+    // Down from the short cell skips the long cell's wrapped rows
+    h.keys("down");
+    h.type_text("A");
+    assert!(h.text().lines().last().unwrap().contains('A'), "{}", h.text());
+    assert!(h.text().contains("| Qx | alpha"), "{}", h.text());
+}
+
+#[test]
+fn source_mode_edits_tables_as_text() {
+    let mut h = Harness::new(80, 24, &[("a.md", TABLE)]);
+    h.keys("alt+e down down home");
+    let s = h.frame();
+    assert!(s.contains("| a | b |"), "{s}");
+    h.type_text("|");
+    assert_eq!(h.text(), "intro\n\n|| a | b |\n|---|---|\n| 1 | 2 |");
+}
+
+#[test]
+fn page_keys_move_half_a_screen_and_wheel_one_row() {
+    let text: String = (0..200).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n");
+    let mut h = Harness::new(80, 24, &[("a.md", &text)]);
+    h.frame();
+    let y_of = |h: &Harness, s: &str| (0..24).find(|&y| h.vt.row(y).split_whitespace().any(|w| w == s));
+    h.keys("pagedown pagedown");
+    let y0 = y_of(&h, "L40").unwrap();
+    h.wheel(10, 10, true);
+    assert_eq!(y_of(&h, "L40").unwrap(), y0 - 1, "one row per wheel event");
+    let y1 = y_of(&h, "L40").unwrap();
+    h.keys("pagedown");
+    let y2 = y_of(&h, "L40").unwrap();
+    let moved = y1 - y2;
+    assert!((9..=12).contains(&moved), "PageDown should scroll about half of a 24-row screen, moved {moved}");
+    h.keys("pageup");
+    let back = y_of(&h, "L40").unwrap() - y2;
+    assert!((9..=12).contains(&back), "PageUp should scroll about half a screen, moved {back}");
+}
+
+#[test]
+fn table_caret_never_rests_on_pipes() {
+    // opened with the caret at (0, 0), on the leading pipe
+    let mut h = Harness::new(80, 24, &[("a.md", "| a | b |\n|---|---|\n| 1 | 2 |")]);
+    h.type_text("x");
+    assert_eq!(h.text(), "| xa | b |\n|---|---|\n| 1 | 2 |");
+    // Down past the end of the document stays in the last cell
+    h.keys("down down down down");
+    h.type_text("y");
+    assert_eq!(h.text(), "| xa | b |\n|---|---|\n| 1 | 2y |");
+    h.keys("ctrl+home");
+    h.type_text("z");
+    assert_eq!(h.text(), "| zxa | b |\n|---|---|\n| 1 | 2y |");
+    h.keys("ctrl+end");
+    h.type_text("w");
+    assert_eq!(h.text(), "| zxa | b |\n|---|---|\n| 1 | 2yw |");
+}
+
+#[test]
+fn table_without_outer_pipes_skips_the_alignment_row() {
+    let mut h = Harness::new(80, 24, &[("a.md", "a | b\n--|--\n1 | 2")]);
+    h.keys("right right right right");
+    h.type_text("x");
+    assert_eq!(h.text(), "a | b\n--|--\nx1 | 2");
+    h.keys("left left");
+    h.type_text("y");
+    assert_eq!(h.text(), "a | by\n--|--\nx1 | 2");
+}
+
+#[test]
+fn table_pipe_after_a_backslash_completes_the_escape() {
+    let mut h = Harness::new(80, 24, &[("a.md", "| a | b |\n|---|---|\n| 1 | 2 |")]);
+    h.keys("right");
+    h.type_text("\\|");
+    assert_eq!(h.text(), "| a\\| | b |\n|---|---|\n| 1 | 2 |");
+    h.type_text("|");
+    assert_eq!(h.text(), "| a\\|\\| | b |\n|---|---|\n| 1 | 2 |");
+}
+
+#[test]
+fn table_cells_beyond_the_header_are_not_reachable() {
+    let mut h = Harness::new(80, 24, &[("a.md", "| a | b |\n|---|---|\n| 1 | 2 | 3 |")]);
+    h.keys("down right right right right right");
+    h.type_text("x");
+    assert_eq!(h.text(), "| a | b |\n|---|---|\n| 1 | 2x | 3 |");
+}
+
+#[test]
+fn table_enter_on_the_alignment_row_does_not_split_the_table() {
+    let mut h = Harness::new(80, 24, &[("a.md", "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |")]);
+    h.frame();
+    let (x, y) = h.vt.find("├").unwrap();
+    h.click(x + 1, y, 0);
+    h.keys("enter");
+    h.type_text("x");
+    assert_eq!(h.text(), "intro\n\n| a | b |\n|---|---|\n| 1x | 2 |");
 }

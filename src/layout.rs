@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::buffer::Pos;
 use crate::highlight::{self, Tok};
 use crate::images::{ImageStore, Img, ImgRef};
 use crate::markdown::{self as md, BlockKind, Document, LineKind, Span, SpanKind};
@@ -72,6 +73,28 @@ pub struct VRow {
     /// typeset (proportional) rows: column ↔ pixel map, and this row's index in the image
     pub tmap: Option<Rc<crate::typeset::TypeMap>>,
     pub trow: u16,
+    /// grid-table rows: caret stops per cell. Cells interleave on a row (and a
+    /// cell's text wraps over several rows), so the row's source range alone
+    /// can't place the caret; when non-empty these are the only caret stops.
+    pub cells: Vec<CellStops>,
+}
+
+/// Caret stops of one table cell on one visual row.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CellStops {
+    /// x of the cell's first content column and of its last caret position
+    pub x0: u16,
+    pub x1: u16,
+    /// (source byte, x), in source order
+    pub stops: Vec<(usize, u16)>,
+}
+
+impl CellStops {
+    fn push(&mut self, col: usize, x: u16) {
+        if !self.stops.iter().any(|&(c, _)| c == col) {
+            self.stops.push((col, x));
+        }
+    }
 }
 
 impl VRow {
@@ -91,6 +114,7 @@ impl VRow {
             end_x: 0,
             tmap: None,
             trow: 0,
+            cells: vec![],
         }
     }
     fn deco() -> VRow {
@@ -559,6 +583,8 @@ pub struct TableModel {
     widths: Vec<usize>,
     aligns: Vec<u8>,
     cells: HashMap<usize, Vec<Vec<Atom>>>,
+    /// source byte range of each cell's content, by row offset
+    spans: HashMap<usize, Vec<(usize, usize)>>,
 }
 
 fn h64<T: Hash>(t: &T) -> u64 {
@@ -592,8 +618,10 @@ impl Layout {
     }
 
     /// Visual rows for line `i`. `cursor` is the cursor column when it is on
-    /// this line; `block_active` when the cursor is inside this line's block.
-    pub fn rows(&self, ctx: &Ctx, lines: &[String], doc: &Document, i: usize, cursor: Option<usize>, block_active: bool) -> Rc<Vec<VRow>> {
+    /// this line; `active` the cursor position when it is inside this line's
+    /// block (a grid table sizes its columns around the cell being edited).
+    pub fn rows(&self, ctx: &Ctx, lines: &[String], doc: &Document, i: usize, cursor: Option<usize>, active: Option<Pos>) -> Rc<Vec<VRow>> {
+        let block_active = active.is_some();
         let info = &doc.infos[i];
         let text = &lines[i];
         let blk = info.block.map(|b| &doc.blocks[b]);
@@ -612,7 +640,10 @@ impl Layout {
                 _ => b.hash(&mut h),
             }
         }
-        block_active.hash(&mut h);
+        match blk {
+            Some(b) if b.kind == BlockKind::Table => active.map(|p| (p.line - b.start, p.col)).hash(&mut h),
+            _ => block_active.hash(&mut h),
+        }
         cursor.hash(&mut h);
         if i == 0 {
             ctx.title.hash(&mut h);
@@ -629,7 +660,7 @@ impl Layout {
         if let Some(r) = self.cache.borrow().get(&key) {
             return r.clone();
         }
-        let mut rows = self.layout_line(ctx, lines, doc, i, cursor, block_active);
+        let mut rows = self.layout_line(ctx, lines, doc, i, cursor, active);
         if i == 0
             && let Some(t) = ctx.title
             && ctx.mode != Mode::Source
@@ -1124,7 +1155,8 @@ impl Layout {
     }
 
     // ------------------------------------------------------------------ dispatcher
-    fn layout_line(&self, ctx: &Ctx, lines: &[String], doc: &Document, i: usize, reveal: Option<usize>, block_active: bool) -> Vec<VRow> {
+    fn layout_line(&self, ctx: &Ctx, lines: &[String], doc: &Document, i: usize, reveal: Option<usize>, active: Option<Pos>) -> Vec<VRow> {
+        let block_active = active.is_some();
         let th = ctx.theme;
         let info = &doc.infos[i];
         let text = lines[i].as_str();
@@ -1142,8 +1174,9 @@ impl Layout {
                 BlockKind::Code => return self.code_line(ctx, lines, doc, i, b, block_active),
                 BlockKind::Math => return self.math_line(ctx, lines, i, b, block_active),
                 BlockKind::Front => return self.front_line(ctx, lines, i, b, block_active),
-                BlockKind::Table if !block_active => return self.table_line(ctx, lines, i, b),
-                BlockKind::Table => return self.table_raw_line(ctx, lines, doc, i, reveal),
+                // the alignment row is edited as source; everything else stays a grid
+                BlockKind::Table if i == b.start + 1 && reveal.is_some() => return self.table_raw_line(ctx, lines, doc, i, reveal),
+                BlockKind::Table => return self.table_line(ctx, lines, i, b, active),
                 _ => {}
             }
         }
@@ -2124,8 +2157,11 @@ impl Layout {
         self.rows_from(ctx, text, &atoms, vec![], &[], 0, text.len(), None, None, 1, None, false, ctx.width)
     }
 
-    fn table_model(&self, ctx: &Ctx, lines: &[String], b: &md::Block) -> Rc<TableModel> {
-        let key = h64(&(&lines[b.start..b.end], ctx.width, ctx.mode, ctx.theme.name.as_str(), ctx.epoch));
+    /// Cells and column widths. `edit` is the caret (row offset, col) when it
+    /// is in this table: that row reveals markup around it, and the widths
+    /// grow to fit, as Obsidian's table editor shows the cell being edited.
+    fn table_model(&self, ctx: &Ctx, lines: &[String], b: &md::Block, edit: Option<(usize, usize)>) -> Rc<TableModel> {
+        let key = h64(&(&lines[b.start..b.end], ctx.width, ctx.mode, ctx.theme.name.as_str(), ctx.epoch, edit));
         if let Some(m) = self.tables.borrow().get(&key) {
             return m.clone();
         }
@@ -2137,8 +2173,9 @@ impl Layout {
             }
             let text = &lines[ln];
             let base = if ln == b.start { Style::new().bold() } else { Style::new() };
+            let reveal = edit.filter(|e| e.0 == ln - b.start).map(|e| e.1);
             let mut row: Vec<Vec<Atom>> =
-                md::split_table_row(text).into_iter().take(ncols).map(|(a, e)| self.inline_atoms(ctx, text, a, e, base, None, false).0).collect();
+                md::split_table_row(text).into_iter().take(ncols).map(|(a, e)| self.inline_atoms(ctx, text, a, e, base, reveal, false).0).collect();
             row.resize(ncols, vec![]);
             // keyed by row offset: the model is shared by identical tables anywhere
             cells.insert(ln - b.start, row);
@@ -2168,14 +2205,21 @@ impl Layout {
         }
         let mut aligns = b.aligns.clone();
         aligns.resize(ncols, b'l');
-        let m = Rc::new(TableModel { widths, aligns, cells });
-        self.tables.borrow_mut().insert(key, m.clone());
+        let spans = (b.start..b.end).filter(|&ln| ln != b.start + 1).map(|ln| (ln - b.start, md::split_table_row(&lines[ln]))).collect();
+        let m = Rc::new(TableModel { widths, aligns, cells, spans });
+        let mut t = self.tables.borrow_mut();
+        // keyed by caret position while editing, so bound it
+        if t.len() > 256 {
+            t.clear();
+        }
+        t.insert(key, m.clone());
         m
     }
 
-    fn table_line(&self, ctx: &Ctx, lines: &[String], i: usize, b: &md::Block) -> Vec<VRow> {
+    fn table_line(&self, ctx: &Ctx, lines: &[String], i: usize, b: &md::Block, active: Option<Pos>) -> Vec<VRow> {
         let th = ctx.theme;
-        let m = self.table_model(ctx, lines, b);
+        let edit = active.filter(|p| (b.start..b.end).contains(&p.line)).map(|p| (p.line - b.start, p.col));
+        let m = self.table_model(ctx, lines, b, edit);
         let text = lines[i].as_str();
         let bst = Style::fg(th.border);
         let border = |l: &str, mid: &str, r: &str| -> Seg {
@@ -2183,7 +2227,9 @@ impl Layout {
             Seg { x: 0, w: str_width(&s) as u16, text: s, style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0, icon: None }
         };
         if i == b.start + 1 {
-            let mut r = VRow::new(0, text.len());
+            // not a caret stop: Up/Down step over it (with the caret on it,
+            // the line is shown as source instead)
+            let mut r = VRow { cursorable: false, kind: RowKind::Deco, ..VRow::new(0, text.len()) };
             r.segs.push(border("├", "┼", "┤"));
             r.segs.push(Seg {
                 x: 0,
@@ -2210,6 +2256,8 @@ impl Layout {
         }
         let empty = vec![];
         let row_cells = m.cells.get(&(i - b.start)).unwrap_or(&empty);
+        let no_spans = vec![];
+        let spans = m.spans.get(&(i - b.start)).unwrap_or(&no_spans);
         let wrapped: Vec<Vec<Vec<Seg>>> = row_cells.iter().enumerate().map(|(c, at)| wrap_atoms(text, at, m.widths[c], 0, 0, 1, false)).collect();
         let h = wrapped.iter().map(|w| w.len()).max().unwrap_or(1).max(1);
         for r in 0..h {
@@ -2225,10 +2273,24 @@ impl Layout {
                     b'c' => m.widths[c].saturating_sub(used) / 2,
                     _ => 0,
                 };
+                let mut cs = CellStops { x0: (x + 1) as u16, x1: (x + 1 + m.widths[c]) as u16, stops: vec![] };
                 for s in parts {
                     let mut s = s.clone();
                     s.x += (x + 1 + pad) as u16;
+                    seg_stops(&s, text, &mut cs);
                     row.segs.push(s);
+                }
+                if let Some(&(a, e)) = spans.get(c) {
+                    // the cell's ends are always reachable, even when empty
+                    if r == 0 && !cs.stops.iter().any(|s| s.0 == a) {
+                        cs.stops.insert(0, (a, (x + 1 + pad) as u16));
+                    }
+                    if r + 1 == wrapped.get(c).map_or(1, |w| w.len()) {
+                        cs.push(e, (x + 1 + pad + used) as u16);
+                    }
+                }
+                if !cs.stops.is_empty() {
+                    row.cells.push(cs);
                 }
                 x += m.widths[c] + 2;
                 row.segs.push(Seg {
@@ -2247,10 +2309,6 @@ impl Layout {
                     icon: None,
                 });
                 x += 1;
-            }
-            row.cursorable = r == 0;
-            if !row.cursorable {
-                row.kind = RowKind::Deco;
             }
             if i == b.start {
                 row.fill = Some(Style::bg(th.sidebar));
@@ -2304,10 +2362,56 @@ impl Layout {
 
 fn return_false() {}
 
+/// Caret stops of a laid-out segment (cell-relative x already applied).
+fn seg_stops(s: &Seg, line: &str, cs: &mut CellStops) {
+    if !s.src {
+        return;
+    }
+    if !s.run {
+        cs.push(s.a, s.x);
+        cs.push(s.b, s.x + s.w);
+        return;
+    }
+    let (mut k, mut nat) = (s.a, 0usize);
+    cs.push(k, s.x);
+    for g in line[s.a..s.b].graphemes(true) {
+        nat += if g == "\t" { 1 } else { grapheme_width(g) };
+        k += g.len();
+        cs.push(k, s.x + seg_adv(s, nat).floor() as u16);
+    }
+}
+
 // ---------------------------------------------------------------------- mapping
+
+/// Grid-table row: (x, distance) of the caret stop nearest to `col`.
+fn nearest_stop(row: &VRow, col: usize) -> Option<(usize, usize)> {
+    row.cells.iter().flat_map(|c| &c.stops).map(|&(c, x)| (x as usize, c.abs_diff(col))).min_by_key(|&(_, d)| d)
+}
+
+/// Whether vertical motion at goal `x` can enter this row. A grid-table row
+/// whose cell under `x` has no text on it (a neighbour wrapped further) is
+/// skipped, so Up/Down stays in its column.
+pub fn row_reaches(row: &VRow, x: usize) -> bool {
+    row.cells.is_empty() || row.cells.iter().any(|c| c.x0 as usize <= x && x <= c.x1 as usize)
+}
+
+/// Grid-table row: x spans covering source bytes `a..b`, one per cell.
+pub fn cell_spans(row: &VRow, a: usize, b: usize) -> Vec<(usize, usize)> {
+    row.cells
+        .iter()
+        .filter_map(|c| {
+            let xs = c.stops.iter().filter(|s| a <= s.0 && s.0 <= b).map(|s| s.1 as usize);
+            let (lo, hi) = xs.fold((usize::MAX, 0), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            (lo < hi).then_some((lo, hi))
+        })
+        .collect()
+}
 
 /// Relative x of a cursor before source byte `col` in this row.
 pub fn x_of_col(row: &VRow, line: &str, col: usize) -> usize {
+    if !row.cells.is_empty() {
+        return nearest_stop(row, col).map_or(row.end_x as usize, |s| s.0);
+    }
     if let Some(m) = &row.tmap {
         let li = (0..m.lines.len()).find(|&li| m.anchor_row(li) == row.trow as usize).unwrap_or_else(|| m.line_of(col, line.len()));
         let ix = row.image.as_ref().map_or(0, |i| i.2 as usize);
@@ -2344,6 +2448,10 @@ pub fn x_of_col(row: &VRow, line: &str, col: usize) -> usize {
 
 /// Source byte for a click at relative x.
 pub fn col_of_x(row: &VRow, line: &str, x: usize) -> usize {
+    if !row.cells.is_empty() {
+        let nearest = row.cells.iter().flat_map(|c| &c.stops).min_by_key(|s| (s.1 as usize).abs_diff(x));
+        return nearest.map_or(row.a, |s| s.0);
+    }
     if let Some(m) = &row.tmap {
         let _ = line;
         let li = (0..m.lines.len()).find(|&li| m.anchor_row(li) == row.trow as usize).unwrap_or(0);
@@ -2423,7 +2531,20 @@ mod tests {
         for i in 0..lines.len() {
             let c = cursor.filter(|c| c.0 == i).map(|c| c.1);
             let ba = d.infos[i].block.is_some() && d.infos[i].block == active_block;
-            for r in l.rows(&ctx, &lines, &d, i, c, ba).iter() {
+            for r in l
+                .rows(
+                    &ctx,
+                    &lines,
+                    &d,
+                    i,
+                    c,
+                    ba.then(|| {
+                        let (ln, col) = cursor.unwrap();
+                        Pos::new(ln, col)
+                    }),
+                )
+                .iter()
+            {
                 let mut s = String::new();
                 let mut x = 0;
                 for seg in &r.segs {
@@ -2462,9 +2583,20 @@ mod tests {
     fn table_render() {
         let r = render("| a | bb |\n|---|:-:|\n| 1 | 2 |", 40, None);
         assert_eq!(r, ["┌───┬────┐", "│ a │ bb │", "├───┼────┤", "│ 1 │ 2  │", "└───┴────┘"]);
-        // active table shows source
-        let r = render("| a | bb |\n|---|:-:|\n| 1 | 2 |", 40, Some((2, 0)));
-        assert_eq!(r[0], "| a | bb |");
+        // editing keeps the grid
+        let r2 = render("| a | bb |\n|---|:-:|\n| 1 | 2 |", 40, Some((2, 2)));
+        assert_eq!(r2, r);
+        // only the alignment row turns to source when the caret is on it
+        let r = render("| a | bb |\n|---|:-:|\n| 1 | 2 |", 40, Some((1, 0)));
+        assert_eq!(r, ["┌───┬────┐", "│ a │ bb │", "|---|:-:|", "│ 1 │ 2  │", "└───┴────┘"]);
+    }
+
+    #[test]
+    fn table_cell_being_edited_reveals_markup_and_widens() {
+        let src = "| **b** | c |\n|---|---|\n| 1 | 2 |";
+        assert_eq!(render(src, 40, None)[1], "│ b │ c │");
+        let r = render(src, 40, Some((0, 4)));
+        assert_eq!(r, ["┌───────┬───┐", "│ **b** │ c │", "├───────┼───┤", "│ 1     │ 2 │", "└───────┴───┘"]);
     }
 
     #[test]
@@ -2501,7 +2633,7 @@ mod tests {
             cur_hit: None,
         };
         let l = Layout::new();
-        let rows = l.rows(&ctx, &lines, &d, 0, None, false);
+        let rows = l.rows(&ctx, &lines, &d, 0, None, None);
         let row = &rows[0];
         let line = &lines[0];
         // "hello wörld 日本 end" — col of 'w' (byte 8) at x=6
@@ -2538,7 +2670,7 @@ mod tests {
             cur_hit: None,
         };
         let l = Layout::new();
-        let rows = l.rows(&ctx, &lines, &d, 0, Some(5), false);
+        let rows = l.rows(&ctx, &lines, &d, 0, Some(5), None);
         assert_eq!(rows[0].scale, 2);
         // "# " revealed at scale 2 → 'B' starts at x=4
         assert_eq!(x_of_col(&rows[0], &lines[0], 2), 4);
