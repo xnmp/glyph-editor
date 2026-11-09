@@ -457,9 +457,12 @@ impl View {
                     if row.scale > 1 {
                         // soft cursor inside scaled text: invert the glyph cell
                         let cx = cx.min(self.cx0 + self.cw);
-                        cv.restyle(cx, sy, 1, |s| s.reverse());
-                        if cx < cv.w && cv.at(cx, sy).flag != crate::screen::NORMAL {
-                            // cursor at end of scaled text: draw a bar
+                        if cx < cv.w && cv.at(cx, sy).flag == crate::screen::NORMAL && cv.at(cx, sy).scale > 1 {
+                            cv.restyle(cx, sy, 1, |s| s.reverse());
+                        } else {
+                            // past the end of the scaled text: a full-size block
+                            let st = Style::fg(theme.fg_or(Color::Default)).reverse();
+                            cv.put_scaled(cx as i32, sy as i32, " ", st, row.scale, self.cx0 + self.cw + 2);
                         }
                         cursor_at = Some((cx, sy));
                         cv.cursor = None;

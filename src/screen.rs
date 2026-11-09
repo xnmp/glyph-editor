@@ -243,11 +243,23 @@ pub struct Screen {
     next_pid: u32,
     cursor_shape: u8,
     title: Option<String>,
+    frame: u64,
+    last_used: HashMap<u32, u64>,
 }
 
 impl Screen {
     pub fn new(placeholders: bool) -> Screen {
-        Screen { prev: None, placeholders, transmitted: HashSet::new(), live: HashMap::new(), next_pid: 1, cursor_shape: 0, title: None }
+        Screen {
+            prev: None,
+            placeholders,
+            transmitted: HashSet::new(),
+            live: HashMap::new(),
+            next_pid: 1,
+            cursor_shape: 0,
+            title: None,
+            frame: 0,
+            last_used: HashMap::new(),
+        }
     }
 
     pub fn invalidate(&mut self) {
@@ -255,6 +267,7 @@ impl Screen {
     }
 
     pub fn forget_images(&mut self) {
+        self.last_used.clear();
         self.transmitted.clear();
         self.live.clear();
     }
@@ -284,6 +297,18 @@ impl Screen {
         for img in &cv.images {
             if self.transmitted.insert(img.id) {
                 gfx::transmit_png(&mut out, img.id, &img.png, img.cols, img.rows, self.placeholders);
+            }
+            self.last_used.insert(img.id, self.frame);
+        }
+        // free images not shown for a while (they are re-sent if needed again)
+        self.frame += 1;
+        if self.transmitted.len() > 48 {
+            let frame = self.frame;
+            let stale: Vec<u32> = self.transmitted.iter().copied().filter(|id| frame - self.last_used.get(id).copied().unwrap_or(0) > 600).collect();
+            for id in stale {
+                self.transmitted.remove(&id);
+                self.last_used.remove(&id);
+                gfx::delete_image(&mut out, id);
             }
         }
         let h = cv.h;

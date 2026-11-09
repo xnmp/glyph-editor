@@ -51,6 +51,12 @@ fn headings_use_text_sizing() {
     assert_eq!(h.vt.cell(x2, y2).scale, 2);
     h.type_text("!");
     assert_eq!(h.text(), "text\n# Big Title!\nafter");
+    // soft cursor at the end of a scaled heading is a full-size block
+    let (ex, ey) = h.vt.find("Title!").unwrap();
+    let cur = h.vt.cell(ex + 12, ey);
+    assert_eq!(cur.scale, 2);
+    assert!(cur.style.has(glyph::style::REVERSE));
+    assert!(!h.vt.cursor_visible, "hardware cursor hidden on scaled rows");
 }
 
 #[test]
