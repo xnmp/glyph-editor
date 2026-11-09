@@ -184,6 +184,14 @@ impl Theme {
         Some(t)
     }
 
+    /// The real background if known (for "active" surfaces), else `fallback`.
+    pub fn canvas_or(&self, fallback: Color) -> Color {
+        if self.bg.is_set() { self.bg } else if self.canvas.is_set() { self.canvas } else { fallback }
+    }
+    pub fn fg_or(&self, fallback: Color) -> Color {
+        if self.fg.is_set() { self.fg } else { fallback }
+    }
+
     pub fn base(&self) -> Style {
         Style { fg: self.fg, bg: self.bg, ..Style::new() }
     }

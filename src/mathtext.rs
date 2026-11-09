@@ -31,7 +31,7 @@ fn symbol(name: &str) -> Option<&'static str> {
 }
 
 fn sup(c: char) -> Option<char> {
-    let (a, b) = ("0123456789+-=()nijkxabcdefghlmoprstuvwyzT", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱʲᵏˣᵃᵇᶜᵈᵉᶠᵍʰˡᵐᵒᵖʳˢᵗᵘᵛʷʸᶻᵀ");
+    let (a, b) = ("0123456789+-=()nijkxabcdefghlmoprstuvwyzT∞*′", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱʲᵏˣᵃᵇᶜᵈᵉᶠᵍʰˡᵐᵒᵖʳˢᵗᵘᵛʷʸᶻᵀ∞*′");
     a.chars().position(|x| x == c).and_then(|i| b.chars().nth(i))
 }
 

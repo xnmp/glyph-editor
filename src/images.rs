@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use image::{DynamicImage, Rgba, RgbaImage};
@@ -56,6 +57,8 @@ pub struct ImageStore {
     font: Option<Arc<ab_glyph::FontVec>>,
     pub synchronous: bool,
     pub epoch: u64,
+    /// bumped by workers whenever an image finishes (part of the layout cache key)
+    pub ready: Arc<AtomicU64>,
 }
 
 fn new_id(sh: &Arc<Mutex<Shared>>) -> u32 {
@@ -96,6 +99,7 @@ impl ImageStore {
             font: load_font().map(Arc::new),
             synchronous: false,
             epoch: 0,
+            ready: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -106,6 +110,10 @@ impl ImageStore {
             self.shared.lock().unwrap().slots.clear();
             self.epoch += 1;
         }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.epoch * 1_000_003 + self.ready.load(Ordering::SeqCst)
     }
 
     pub fn has_font(&self) -> bool {
@@ -122,6 +130,7 @@ impl ImageStore {
         }
         let shared = self.shared.clone();
         let waker = self.waker.clone();
+        let ready = self.ready.clone();
         let (cw, ch) = (self.cell_w, self.cell_h);
         let run = move || {
             let r = match job() {
@@ -132,6 +141,7 @@ impl ImageStore {
                 Err(e) => ImgRef::Error(e),
             };
             shared.lock().unwrap().slots.insert(key, r);
+            ready.fetch_add(1, Ordering::SeqCst);
             waker();
         };
         if self.synchronous {
@@ -407,8 +417,10 @@ mod tests {
             let _ = tx.lock().unwrap().send(());
         }));
         st.base_dir = dir.clone();
-        assert!(matches!(st.get("a.png", 80, 20, None, None), ImgRef::Pending));
-        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        // the worker may already be done by the time get() returns
+        if matches!(st.get("a.png", 80, 20, None, None), ImgRef::Pending) {
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        }
         let r = st.get("a.png", 80, 20, None, None);
         let img = r.ready().expect("ready");
         assert_eq!((img.data.cols, img.data.rows), (3, 2));

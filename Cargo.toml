@@ -11,3 +11,6 @@ libc = "0.2.191"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy", "parsing"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.3"
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }

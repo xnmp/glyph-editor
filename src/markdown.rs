@@ -95,6 +95,8 @@ pub struct Block {
 pub struct Document {
     pub infos: Vec<LineInfo>,
     pub blocks: Vec<Block>,
+    /// line starts a construct with an empty parser state (safe restart point)
+    pub restart: Vec<bool>,
 }
 
 impl Document {
@@ -373,25 +375,129 @@ fn blank_info(kind: LineKind) -> LineInfo {
 }
 
 pub fn parse_document(lines: &[String]) -> Document {
-    let n = lines.len();
-    let mut infos: Vec<LineInfo> = (0..n).map(|_| LineInfo::default()).collect();
+    let (infos, blocks, restart, _) = parse_from(lines, 0, None);
+    Document { infos, blocks, restart }
+}
+
+/// Re-parse after an edit, in place. Lines `[start, old_end)` of the old
+/// document were replaced by `[start, new_end)`; everything else is unchanged.
+/// Work is proportional to the edited construct, not the document.
+pub fn parse_incremental(doc: &mut Document, lines: &[String], start: usize, old_end: usize, new_end: usize) {
+    let old_n = doc.infos.len();
+    let delta = new_end as isize - old_end as isize;
+    if old_n == 0 || lines.len() as isize != old_n as isize + delta {
+        *doc = parse_document(lines);
+        return;
+    }
+    // an opening "---" without a frontmatter block could gain its closing line
+    if lines[0].trim_end() == "---" && !doc.blocks.first().is_some_and(|b| b.kind == BlockKind::Front) {
+        *doc = parse_document(lines);
+        return;
+    }
+    // restart at or before the line preceding the edit (tables look one line ahead)
+    let mut r = start.saturating_sub(1).min(old_n - 1);
+    while r > 0 && !doc.restart[r] {
+        r -= 1;
+    }
+    let (mid_infos, mid_blocks, mid_restart, sync) = parse_from(lines, r, Some((doc, delta, new_end)));
+    let sync_old = match sync {
+        Some(s) => (s as isize - delta) as usize,
+        None => old_n,
+    };
+    let k0 = doc.blocks.iter().position(|b| b.end > r).unwrap_or(doc.blocks.len());
+    let k1 = doc.blocks[k0..].iter().position(|b| b.start >= sync_old).map_or(doc.blocks.len(), |p| p + k0);
+    let nmid = mid_blocks.len();
+    let shift = (k0 + nmid) as isize - k1 as isize;
+    // tail fix-ups (skipped entirely in the common same-shape case)
+    if shift != 0 {
+        for i in &mut doc.infos[sync_old..] {
+            if let Some(b) = i.block.as_mut() {
+                *b = (*b as isize + shift) as usize;
+            }
+        }
+    }
+    if delta != 0 {
+        for b in &mut doc.blocks[k1..] {
+            b.start = (b.start as isize + delta) as usize;
+            b.end = (b.end as isize + delta) as usize;
+        }
+    }
+    let mid_infos: Vec<LineInfo> = mid_infos
+        .into_iter()
+        .map(|mut i| {
+            i.block = i.block.map(|b| b + k0);
+            i
+        })
+        .collect();
+    // same-length replacements are assigned in place (no tail memmove)
+    if mid_infos.len() == sync_old - r {
+        for (dst, src) in doc.infos[r..sync_old].iter_mut().zip(mid_infos) {
+            *dst = src;
+        }
+        doc.restart[r..sync_old].copy_from_slice(&mid_restart);
+    } else {
+        doc.infos.splice(r..sync_old, mid_infos);
+        doc.restart.splice(r..sync_old, mid_restart);
+    }
+    if nmid == k1 - k0 {
+        for (dst, src) in doc.blocks[k0..k1].iter_mut().zip(mid_blocks) {
+            *dst = src;
+        }
+    } else {
+        doc.blocks.splice(k0..k1, mid_blocks);
+    }
+}
+
+/// A vector that grows (with defaults) when written past its end.
+struct Grow<T: Default>(Vec<T>);
+
+impl<T: Default> std::ops::Index<usize> for Grow<T> {
+    type Output = T;
+    fn index(&self, i: usize) -> &T {
+        &self.0[i]
+    }
+}
+
+impl<T: Default> std::ops::IndexMut<usize> for Grow<T> {
+    fn index_mut(&mut self, i: usize) -> &mut T {
+        if i >= self.0.len() {
+            self.0.resize_with(i + 1, T::default);
+        }
+        &mut self.0[i]
+    }
+}
+
+type Parsed = (Vec<LineInfo>, Vec<Block>, Vec<bool>, Option<usize>);
+
+/// Parse from line `from` with a fresh state. With `sync`, stop at the first
+/// restart point at/after `min_line` that matches a restart point of the old
+/// document; returns that line. Infos/blocks are relative to `from`
+/// (block line numbers are absolute).
+fn parse_from(lines: &[String], from: usize, sync: Option<(&Document, isize, usize)>) -> Parsed {
+    let n_all = lines.len();
+    let base = from;
+    let n = n_all;
+    // grown on demand: an incremental parse usually stops after a few lines
+    let mut infos: Grow<LineInfo> = Grow(Vec::with_capacity(64.min(n - base)));
+    let mut restart: Grow<bool> = Grow(Vec::with_capacity(64.min(n - base)));
     let mut blocks: Vec<Block> = vec![];
-    let add = |infos: &mut Vec<LineInfo>, blocks: &mut Vec<Block>, kind: BlockKind, s: usize, e: usize| -> usize {
+    let mut sync_at = None;
+    let add = |infos: &mut Grow<LineInfo>, blocks: &mut Vec<Block>, kind: BlockKind, s: usize, e: usize| -> usize {
         blocks.push(Block { kind, start: s, end: e, lang: String::new(), closed: true, aligns: vec![], ncols: 0, callout_kind: String::new(), fold: 0 });
         let id = blocks.len() - 1;
         for k in s..e {
-            infos[k].block = Some(id);
+            infos[k - base].block = Some(id);
         }
         id
     };
-    let mut i = 0;
-    if n > 1 && lines[0].trim_end() == "---" {
+    let mut i = from;
+    if from == 0 && n > 1 && lines[0].trim_end() == "---" {
         if let Some(j) = (1..n).find(|&j| matches!(lines[j].trim_end(), "---" | "...")) {
             add(&mut infos, &mut blocks, BlockKind::Front, 0, j + 1);
-            infos[0].kind = LineKind::FrontFence;
-            infos[j].kind = LineKind::FrontFence;
+            infos[(0) - base].kind = LineKind::FrontFence;
+            infos[(j) - base].kind = LineKind::FrontFence;
             for k in 1..j {
-                infos[k].kind = LineKind::Front;
+                infos[(k) - base].kind = LineKind::Front;
             }
             i = j + 1;
         }
@@ -399,9 +505,21 @@ pub fn parse_document(lines: &[String]) -> Document {
     let mut list_stack: Vec<usize> = vec![];
     let mut para_open = false;
     while i < n {
+        if list_stack.is_empty() && !para_open {
+            restart[i - base] = true;
+            if let Some((old, delta, min_line)) = sync {
+                if i >= min_line && i > from {
+                    let oi = i as isize - delta;
+                    if oi >= 0 && (oi as usize) < old.restart.len() && old.restart[oi as usize] {
+                        sync_at = Some(i);
+                        break;
+                    }
+                }
+            }
+        }
         let line = lines[i].as_str();
         let stripped = line.trim();
-        infos[i].indent = indent_width(line);
+        infos[(i) - base].indent = indent_width(line);
 
         // fenced code
         if let Some((c, len, lang)) = fence_open(line) {
@@ -419,13 +537,13 @@ pub fn parse_document(lines: &[String]) -> Document {
             let id = add(&mut infos, &mut blocks, BlockKind::Code, i, end);
             blocks[id].lang = lang;
             blocks[id].closed = closed;
-            infos[i].kind = LineKind::Fence;
+            infos[(i) - base].kind = LineKind::Fence;
             for k in i + 1..end {
-                infos[k].kind = LineKind::Code;
-                infos[k].indent = indent_width(&lines[k]);
+                infos[(k) - base].kind = LineKind::Code;
+                infos[(k) - base].indent = indent_width(&lines[k]);
             }
             if closed {
-                infos[j].kind = LineKind::Fence;
+                infos[(j) - base].kind = LineKind::Fence;
             }
             i = end;
             para_open = false;
@@ -443,11 +561,11 @@ pub fn parse_document(lines: &[String]) -> Document {
                 let id = add(&mut infos, &mut blocks, BlockKind::Math, i, end);
                 blocks[id].closed = closed;
                 for k in i..end {
-                    infos[k].kind = LineKind::Math;
+                    infos[(k) - base].kind = LineKind::Math;
                 }
-                infos[i].kind = LineKind::MathFence;
+                infos[(i) - base].kind = LineKind::MathFence;
                 if closed && lines[j].trim() == "$$" {
-                    infos[j].kind = LineKind::MathFence;
+                    infos[(j) - base].kind = LineKind::MathFence;
                 }
                 i = end;
                 para_open = false;
@@ -455,7 +573,7 @@ pub fn parse_document(lines: &[String]) -> Document {
             }
             if stripped.len() > 4 && stripped.ends_with("$$") {
                 add(&mut infos, &mut blocks, BlockKind::Math, i, i + 1);
-                infos[i].kind = LineKind::Math;
+                infos[(i) - base].kind = LineKind::Math;
                 i += 1;
                 para_open = false;
                 continue;
@@ -471,7 +589,7 @@ pub fn parse_document(lines: &[String]) -> Document {
             let end = (j + 1).min(n);
             add(&mut infos, &mut blocks, BlockKind::Comment, i, end);
             for k in i..end {
-                infos[k].kind = LineKind::Comment;
+                infos[(k) - base].kind = LineKind::Comment;
             }
             i = end;
             para_open = false;
@@ -486,10 +604,10 @@ pub fn parse_document(lines: &[String]) -> Document {
             let id = add(&mut infos, &mut blocks, BlockKind::Table, i, j);
             blocks[id].aligns = table_aligns(&lines[i + 1]);
             blocks[id].ncols = split_table_row(line).len();
-            infos[i].kind = LineKind::TableHead;
-            infos[i + 1].kind = LineKind::TableDelim;
+            infos[(i) - base].kind = LineKind::TableHead;
+            infos[(i + 1) - base].kind = LineKind::TableDelim;
             for k in i + 2..j {
-                infos[k].kind = LineKind::TableRow;
+                infos[(k) - base].kind = LineKind::TableRow;
             }
             i = j;
             para_open = false;
@@ -497,7 +615,7 @@ pub fn parse_document(lines: &[String]) -> Document {
             continue;
         }
         if stripped.is_empty() {
-            infos[i].kind = LineKind::Blank;
+            infos[(i) - base].kind = LineKind::Blank;
             para_open = false;
             i += 1;
             continue;
@@ -514,14 +632,14 @@ pub fn parse_document(lines: &[String]) -> Document {
             let mut qstack = vec![];
             for k in i..j {
                 let (d, qe) = parse_quote(&lines[k]);
-                infos[k].quote_depth = d;
-                infos[k].quote_end = qe;
-                classify_inner(&lines[k], qe, &mut infos[k], &mut qstack);
+                infos[(k) - base].quote_depth = d;
+                infos[(k) - base].quote_end = qe;
+                classify_inner(&lines[k], qe, &mut infos[(k) - base], &mut qstack);
             }
             if let Some((kind, fold, title, mend)) = callout {
                 blocks[id].callout_kind = kind.clone();
                 blocks[id].fold = fold;
-                let hi = &mut infos[i];
+                let hi = &mut infos[(i) - base];
                 hi.kind = LineKind::CalloutHead;
                 hi.lst = None;
                 hi.level = 0;
@@ -534,29 +652,36 @@ pub fn parse_document(lines: &[String]) -> Document {
         }
         // setext underline
         if let Some(level) = setext(line) {
-            if para_open && i > 0 && infos[i - 1].kind == LineKind::Text && infos[i - 1].lst.is_none() && list_stack.is_empty() {
-                let prev = &mut infos[i - 1];
+            if para_open && i > 0 && infos[(i - 1) - base].kind == LineKind::Text && infos[(i - 1) - base].lst.is_none() && list_stack.is_empty() {
+                let prev = &mut infos[(i - 1) - base];
                 prev.kind = LineKind::Heading;
                 prev.level = level;
                 prev.setext = true;
                 prev.content = crate::text::leading_ws(&lines[i - 1]);
-                infos[i].kind = LineKind::SetextRule;
-                infos[i].level = level;
+                infos[(i) - base].kind = LineKind::SetextRule;
+                infos[(i) - base].level = level;
                 add(&mut infos, &mut blocks, BlockKind::Heading, i - 1, i + 1);
                 para_open = false;
                 i += 1;
                 continue;
             }
         }
-        classify_inner(line, 0, &mut infos[i], &mut list_stack);
-        if infos[i].kind == LineKind::Heading {
+        classify_inner(line, 0, &mut infos[(i) - base], &mut list_stack);
+        if infos[(i) - base].kind == LineKind::Heading {
             add(&mut infos, &mut blocks, BlockKind::Heading, i, i + 1);
         }
-        para_open = infos[i].kind == LineKind::Text && infos[i].lst.is_none();
+        para_open = infos[(i) - base].kind == LineKind::Text && infos[(i) - base].lst.is_none();
         i += 1;
     }
     let _ = blank_info;
-    Document { infos, blocks }
+    let len = match sync_at {
+        Some(s) => s - base,
+        None => n - base,
+    };
+    let (mut infos, mut restart) = (infos.0, restart.0);
+    infos.resize_with(len, LineInfo::default);
+    restart.resize(len, false);
+    (infos, blocks, restart, sync_at)
 }
 
 /// `[!kind]+ Title` → (kind, fold, title, byte offset where title starts)
@@ -1276,6 +1401,50 @@ mod tests {
         assert_eq!(cells.len(), 3);
         assert_eq!(&r[cells[0].0..cells[0].1], "a `|` b");
         assert_eq!(&r[cells[1].0..cells[1].1], "c \\| d");
+    }
+
+    #[test]
+    fn incremental_matches_full() {
+        // pseudo-random edits on a mixed document must equal a full re-parse
+        let base = "---\na: 1\n---\n# H\npara\ntext\n\n- a\n  - b\n\n```py\nx\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n> [!note]\n> body\n\n$$\nx\n$$\nSetext\n---\n\nend";
+        let snippets = ["", "```", "$$", "- item", "> quote", "| x | y |", "|---|---|", "---", "===", "# head", "text", "  - nested", "%%", "<!--", "-->"];
+        let mut seed: u64 = std::env::var("GLYPH_FUZZ_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(12345);
+        let mut rnd = |m: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % m
+        };
+        let rounds: usize = std::env::var("GLYPH_FUZZ_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+        for _round in 0..rounds {
+            let mut buf = crate::buffer::Buffer::new(base);
+            let mut doc = parse_document(&buf.lines);
+            buf.take_dirty();
+            for _ in 0..6 {
+                let n = buf.lines.len();
+                let l = rnd(n);
+                let action = rnd(3);
+                let snip = snippets[rnd(snippets.len())];
+                match action {
+                    0 => {
+                        let p = crate::buffer::Pos::new(l, 0);
+                        buf.insert(p, &format!("{snip}\n"));
+                    }
+                    1 if n > 2 => {
+                        let e = (l + 1 + rnd(3)).min(n - 1);
+                        buf.replace(crate::buffer::Pos::new(l, 0), crate::buffer::Pos::new(e, 0), "");
+                    }
+                    _ => {
+                        let len = buf.lines[l].len();
+                        buf.replace(crate::buffer::Pos::new(l, 0), crate::buffer::Pos::new(l, len), snip);
+                    }
+                }
+                let Some((s, oe, ne)) = buf.take_dirty() else { continue };
+                parse_incremental(&mut doc, &buf.lines, s, oe, ne);
+                let full = parse_document(&buf.lines);
+                assert_eq!(doc.infos, full.infos, "infos differ:\n{}", buf.text());
+                assert_eq!(doc.blocks, full.blocks, "blocks differ:\n{}", buf.text());
+                assert_eq!(doc.restart, full.restart);
+            }
+        }
     }
 
     #[test]

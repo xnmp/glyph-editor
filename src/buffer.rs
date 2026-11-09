@@ -47,14 +47,20 @@ pub struct Buffer {
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
     open: Option<Transaction>,
-    /// lines touched since last `take_dirty` (min, max), for incremental work
+    /// incremental-parse bookkeeping: lines before `dirty_head` and the last
+    /// `dirty_tail` lines are unchanged since `take_dirty` (usize::MAX = clean)
+    dirty_head: usize,
+    dirty_tail: usize,
+    dirty_len: usize,
     pub dirty_from: usize,
 }
 
 impl Buffer {
     pub fn new(text: &str) -> Buffer {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        Buffer { lines: text.split('\n').map(String::from).collect(), version: 0, undo: vec![], redo: vec![], open: None, dirty_from: 0 }
+        let lines: Vec<String> = text.split('\n').map(String::from).collect();
+        let n = lines.len();
+        Buffer { lines, version: 0, undo: vec![], redo: vec![], open: None, dirty_head: usize::MAX, dirty_tail: usize::MAX, dirty_len: n, dirty_from: 0 }
     }
 
     pub fn text(&self) -> String {
@@ -94,7 +100,24 @@ impl Buffer {
         s
     }
 
+    /// (start, old_end, new_end) of the region changed since the last call.
+    pub fn take_dirty(&mut self) -> Option<(usize, usize, usize)> {
+        if self.dirty_head == usize::MAX {
+            self.dirty_len = self.lines.len();
+            return None;
+        }
+        let tail = self.dirty_tail.min(self.dirty_len).min(self.lines.len());
+        let r = (self.dirty_head, self.dirty_len - tail, self.lines.len() - tail);
+        self.dirty_head = usize::MAX;
+        self.dirty_tail = usize::MAX;
+        self.dirty_len = self.lines.len();
+        Some(r)
+    }
+
     fn raw_replace(&mut self, a: Pos, b: Pos, text: &str) -> Pos {
+        let unchanged_tail = self.lines.len() - b.line - 1;
+        self.dirty_head = self.dirty_head.min(a.line);
+        self.dirty_tail = self.dirty_tail.min(unchanged_tail);
         let tail = self.lines[b.line][b.col..].to_string();
         let mut head = self.lines[a.line][..a.col].to_string();
         let mut parts = text.split('\n');
