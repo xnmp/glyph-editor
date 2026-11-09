@@ -701,12 +701,21 @@ impl App {
 
     fn nav(&mut self, back: bool) {
         if back {
-            if self.hist_idx == 0 {
+            if self.hist_idx == 0 || self.history.is_empty() {
                 return;
             }
-            if self.hist_idx == self.history.len() {
+            if self.hist_idx >= self.history.len() {
+                // remember where we are so Forward can return here
+                let before = self.history.len();
                 self.push_history();
-                self.hist_idx -= 1;
+                if self.history.len() > before {
+                    self.hist_idx = self.history.len() - 1;
+                } else {
+                    self.hist_idx = self.history.len();
+                }
+            }
+            if self.hist_idx == 0 {
+                return;
             }
             self.hist_idx -= 1;
         } else {

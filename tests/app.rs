@@ -570,3 +570,13 @@ fn note_embeds_render_inline() {
     assert!(s.contains("more text"));
     assert!(!s.contains("not shown"));
 }
+
+#[test]
+fn back_from_untitled_tab_does_not_panic() {
+    // regression (found by tests/chaos.rs): Back when the current tab has no file
+    let mut h = Harness::new(80, 24, &[("a.md", "[[b]]"), ("b.md", "B")]);
+    h.keys("right right alt+enter");
+    assert_eq!(h.text(), "B");
+    h.keys("ctrl+t escape alt+left alt+left alt+left alt+right alt+right");
+    h.app.tabs[h.app.cur].ed.cursor.line; // still alive
+}
