@@ -93,7 +93,7 @@ fn smart_lists_and_tasks() {
     h.type_text("next");
     assert_eq!(h.text(), "- [ ] task\n- [ ] next");
     let s = h.keys("up");
-    assert!(s.contains("☐ next"), "{s}");
+    assert!(s.contains("▒▒ next"), "checkbox drawn as an inline image: {s}");
     // tab indents a list item
     h.keys("down tab");
     assert_eq!(h.text(), "- [ ] task\n    - [ ] next");
@@ -190,10 +190,12 @@ fn mouse_click_drag_and_checkbox() {
     h.drag((x, y), (gx + 5, gy));
     assert_eq!(h.app.tabs[0].ed.selected_text().as_deref(), Some("beta gamma"));
     // click the checkbox toggles the task without moving the cursor away
-    let (cx, cy) = h.vt.find("☐").unwrap();
+    let (cx, cy) = h.vt.find("▒▒ todo").unwrap();
+    let before = h.vt.placeholder_cells().iter().find(|p| p.4 == cy).map(|p| p.0);
     h.click(cx, cy, 0);
     assert_eq!(h.text(), "alpha beta gamma\n- [x] todo item\nlast");
-    assert!(h.vt.text().contains("☑ todo item"));
+    let after = h.vt.placeholder_cells().iter().find(|p| p.4 == cy).map(|p| p.0);
+    assert!(before.is_some() && after.is_some() && before != after, "checked box is a different icon");
 }
 
 #[test]

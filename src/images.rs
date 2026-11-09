@@ -19,6 +19,79 @@ pub struct Img {
     pub char_xs: Vec<f32>,
 }
 
+/// An image used inline as an icon; compared by image id.
+#[derive(Clone)]
+pub struct IconRef(pub Arc<Img>);
+
+impl PartialEq for IconRef {
+    fn eq(&self, o: &Self) -> bool {
+        self.0.data.id == o.0.data.id
+    }
+}
+
+impl std::fmt::Debug for IconRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Icon#{}", self.0.data.id)
+    }
+}
+
+/// Lucide icons (the set Obsidian uses), keyed by callout type.
+pub fn callout_svg(kind: &str) -> &'static str {
+    match kind {
+        "abstract" | "summary" | "tldr" => include_str!("icons/clipboard-list.svg"),
+        "info" => include_str!("icons/info.svg"),
+        "todo" => include_str!("icons/circle-check.svg"),
+        "tip" | "hint" | "important" => include_str!("icons/flame.svg"),
+        "success" | "check" | "done" => include_str!("icons/check.svg"),
+        "question" | "help" | "faq" => include_str!("icons/circle-question-mark.svg"),
+        "warning" | "caution" | "attention" => include_str!("icons/triangle-alert.svg"),
+        "failure" | "fail" | "missing" => include_str!("icons/x.svg"),
+        "danger" | "error" => include_str!("icons/zap.svg"),
+        "bug" => include_str!("icons/bug.svg"),
+        "example" => include_str!("icons/list.svg"),
+        "quote" | "cite" => include_str!("icons/quote.svg"),
+        _ => include_str!("icons/pencil.svg"),
+    }
+}
+
+fn hex(c: (u8, u8, u8)) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2)
+}
+
+/// Obsidian-style rounded checkbox for a task state.
+pub fn checkbox_svg(state: char, stroke: (u8, u8, u8), accent: (u8, u8, u8), check: (u8, u8, u8)) -> Option<String> {
+    let rect = |fill: &str, s: &str| format!(r#"<rect x="3" y="3" width="18" height="18" rx="4.5" fill="{fill}" stroke="{s}" stroke-width="1.8"/>"#);
+    let body = match state {
+        ' ' => rect("none", &hex(stroke)),
+        'x' | 'X' => format!(
+            r#"{}<path d="M7.5 12.4l3.1 3.1 6-6.6" fill="none" stroke="{}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+            rect(&hex(accent), &hex(accent)),
+            hex(check)
+        ),
+        '/' => format!(r#"{}<path d="M4 20 L20 4 L20 20 Z" fill="{}" opacity="0.9"/>"#, rect("none", &hex(accent)), hex(accent)),
+        '-' => format!(r#"{}<path d="M7.5 12h9" stroke="{}" stroke-width="2.4" stroke-linecap="round"/>"#, rect("none", &hex(stroke)), hex(stroke)),
+        _ => return None,
+    };
+    Some(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">{body}</svg>"#))
+}
+
+/// Rasterize an SVG centred in a `w`×`h` canvas, the icon box being `box_px` square.
+pub fn render_svg(svg: &str, w: u32, h: u32, box_px: f32) -> Option<RgbaImage> {
+    let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).ok()?;
+    let mut pm = resvg::tiny_skia::Pixmap::new(w, h)?;
+    let size = tree.size();
+    let s = box_px / size.width().max(size.height());
+    let tx = (w as f32 - size.width() * s) / 2.0;
+    let ty = (h as f32 - size.height() * s) / 2.0;
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_row(s, 0.0, 0.0, s, tx, ty), &mut pm.as_mut());
+    let mut out = RgbaImage::new(w, h);
+    for (i, p) in pm.pixels().iter().enumerate() {
+        let c = p.demultiply();
+        out.put_pixel(i as u32 % w, i as u32 / w, Rgba([c.red(), c.green(), c.blue(), c.alpha()]));
+    }
+    Some(out)
+}
+
 #[derive(Clone)]
 pub enum ImgRef {
     Pending,
@@ -200,10 +273,36 @@ impl ImageStore {
         }
         let (cw, ch) = (self.cell_w, self.cell_h);
         self.submit(key.clone(), move || {
-            let im = if remote { fetch_remote(&path.to_string_lossy())? } else { image::open(&path).map_err(|e| short(e.to_string()))? };
+            let im = if remote {
+                fetch_remote(&path.to_string_lossy())?
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+                let svg = std::fs::read_to_string(&path).map_err(|e| short(e.to_string()))?;
+                let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).map_err(|e| short(e.to_string()))?;
+                let sz = tree.size();
+                let k = (2.0f32).min(4096.0 / sz.width().max(sz.height()));
+                let (w, h) = ((sz.width() * k).ceil() as u32, (sz.height() * k).ceil() as u32);
+                DynamicImage::ImageRgba8(render_svg(&svg, w.max(1), h.max(1), (w.max(h)) as f32).ok_or("svg render failed")?)
+            } else {
+                image::open(&path).map_err(|e| short(e.to_string()))?
+            };
             Ok((fit(im, max_cols * cw, max_rows * ch, req_w, req_h), vec![]))
         });
         self.lookup(&key).unwrap_or(ImgRef::Pending)
+    }
+
+    /// A small inline icon (2 cells × 1 row) from SVG markup, tinted `color`.
+    pub fn icon(&self, svg: &str, color: (u8, u8, u8), scale: f32) -> Option<IconRef> {
+        let svg = svg.replace("currentColor", &hex(color));
+        let key = format!("icon|{svg}|{scale}|{}x{}", self.cell_w, self.cell_h);
+        if let Some(ImgRef::Ready(i)) = self.lookup(&key) {
+            return Some(IconRef(i));
+        }
+        let (w, h) = (self.cell_w * 2, self.cell_h);
+        let im = render_svg(&svg, w, h, (w.min(h) as f32) * scale)?;
+        let id = new_id(&self.shared);
+        let img = Arc::new(Img { data: Arc::new(encode_grid(&im, self.cell_w, self.cell_h, id)), char_xs: vec![] });
+        self.shared.lock().unwrap().slots.insert(key, ImgRef::Ready(img.clone()));
+        Some(IconRef(img))
     }
 
     /// Heading text drawn with a real font, `rows` cells tall.

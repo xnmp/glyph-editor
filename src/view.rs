@@ -402,6 +402,29 @@ impl View {
                         }
                         let st = seg.style;
                         let x = (self.cx0 + seg.x as usize) as i32;
+                        if let Some(ic) = &seg.icon {
+                            let data = ic.0.data.clone();
+                            if !cv.images.iter().any(|d| d.id == data.id) {
+                                cv.images.push(data.clone());
+                            }
+                            if placeholders {
+                                let (r, g, b) = gfx::id_color(data.id);
+                                let cells: String = (0..data.cols as usize).map(|c| gfx::placeholder_cell(0, c)).collect();
+                                cv.put(x, sy as i32, &cells, Style::fg(Color::Rgb(r, g, b)), clip1);
+                            } else if x >= 0 {
+                                cv.placements.push(Placement {
+                                    id: data.id,
+                                    x: x as u16,
+                                    y: sy as u16,
+                                    cols: data.cols,
+                                    rows: 1,
+                                    src_row: 0,
+                                    cell_w: cell.0,
+                                    cell_h: cell.1,
+                                });
+                            }
+                            continue;
+                        }
                         if seg.scale > 1 && seg.units > 0 {
                             cv.put_multicell(x, sy as i32, &seg.text, st, seg.scale, seg.units, seg.n, seg.d, clip1);
                         } else if seg.scale > 1 {

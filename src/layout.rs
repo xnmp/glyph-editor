@@ -44,6 +44,8 @@ pub struct Seg {
     pub units: u8,
     pub n: u8,
     pub d: u8,
+    /// drawn as an inline image (kitty graphics) instead of `text`
+    pub icon: Option<crate::images::IconRef>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,18 +120,19 @@ pub struct Atom {
     pub hidden: bool,
     pub space: bool,
     pub tab: bool,
+    pub icon: Option<crate::images::IconRef>,
 }
 
 impl Atom {
     fn src(a: usize, b: usize, w: u16, style: Style, space: bool) -> Atom {
-        Atom { a, b, w, style, repl: None, hidden: false, space, tab: false }
+        Atom { a, b, w, style, repl: None, hidden: false, space, tab: false, icon: None }
     }
     fn repl(a: usize, b: usize, text: String, style: Style) -> Atom {
         let w = str_width(&text) as u16;
-        Atom { a, b, w, style, repl: Some(text), hidden: false, space: false, tab: false }
+        Atom { a, b, w, style, repl: Some(text), hidden: false, space: false, tab: false, icon: None }
     }
     fn hidden(a: usize, b: usize) -> Atom {
-        Atom { a, b, w: 0, style: Style::new(), repl: None, hidden: true, space: false, tab: false }
+        Atom { a, b, w: 0, style: Style::new(), repl: None, hidden: true, space: false, tab: false, icon: None }
     }
 }
 
@@ -222,11 +225,26 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
                         units: 0,
                         n: 0,
                         d: 0,
+                        icon: None,
                     });
                     continue;
                 }
                 if let Some(r) = at.repl {
-                    segs.push(Seg { x: x as u16, w, text: r, style: at.style, a: at.a, b: at.b, src: true, run: false, scale, units: 0, n: 0, d: 0 });
+                    segs.push(Seg {
+                        x: x as u16,
+                        w,
+                        text: r,
+                        style: at.style,
+                        a: at.a,
+                        b: at.b,
+                        src: true,
+                        run: false,
+                        scale,
+                        units: 0,
+                        n: 0,
+                        d: 0,
+                        icon: at.icon,
+                    });
                     continue;
                 }
                 if at.tab {
@@ -243,6 +261,7 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
                         units: 0,
                         n: 0,
                         d: 0,
+                        icon: None,
                     });
                     continue;
                 }
@@ -270,6 +289,7 @@ pub fn wrap_atoms(line: &str, atoms: &[Atom], width: usize, x0: usize, cont_x: u
                     units: 0,
                     n: 0,
                     d: 0,
+                    icon: None,
                 });
             }
             segs
@@ -286,7 +306,7 @@ pub fn edge_row(width: usize, color: crate::style::Color, top: bool) -> VRow {
     let w = width.max(2);
     let t = if top { format!("▗{}▖", "▄".repeat(w - 2)) } else { format!("▝{}▘", "▀".repeat(w - 2)) };
     let mut r = VRow::deco();
-    r.segs.push(Seg { x: 0, w: w as u16, text: t, style: Style::fg(color), a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 });
+    r.segs.push(Seg { x: 0, w: w as u16, text: t, style: Style::fg(color), a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0, icon: None });
     r
 }
 
@@ -387,6 +407,7 @@ pub fn multicell_rows(text: &str, atoms: &[Atom], spec: (u8, u8, u8), cursor: Op
                 units: units as u8,
                 n: if frac { n as u8 } else { 0 },
                 d: if frac { d as u8 } else { 0 },
+                icon: None,
             });
             *x += wcells;
             chunk.clear();
@@ -410,6 +431,7 @@ pub fn multicell_rows(text: &str, atoms: &[Atom], spec: (u8, u8, u8), cursor: Op
                     units: 0,
                     n: 0,
                     d: 0,
+                    icon: None,
                 });
                 continue;
             }
@@ -864,6 +886,7 @@ impl Layout {
                     units: 0,
                     n: 0,
                     d: 0,
+                    icon: None,
                 });
                 r.end_x = 0;
                 return vec![r];
@@ -914,6 +937,7 @@ impl Layout {
             units: 0,
             n: 0,
             d: 0,
+            icon: None,
         };
         let deco_seg = |x: usize, w: usize, t: &str, st: Style| Seg {
             x: x as u16,
@@ -928,6 +952,7 @@ impl Layout {
             units: 0,
             n: 0,
             d: 0,
+            icon: None,
         };
 
         // quote / callout gutter
@@ -977,12 +1002,26 @@ impl Layout {
             if revealed {
                 atoms.extend(self.raw_atoms(text, co.marker_start, co.marker_end, th.marker()));
             } else {
-                let mut label = format!("{} ", callout_icon(&co.kind));
-                if co.title.is_empty() {
+                let kind_title = if co.title.is_empty() {
                     let mut c = co.kind.chars();
-                    label.push_str(&c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default());
+                    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                // the Lucide icon Obsidian uses, drawn with kitty graphics
+                let icon = match (ctx.images, col.rgb()) {
+                    (Some(imgs), Some(rgb)) if th.rgb => imgs.icon(crate::images::callout_svg(&co.kind), rgb, 0.8),
+                    _ => None,
+                };
+                match icon {
+                    Some(ic) => {
+                        let mut at = Atom::repl(co.marker_start, co.marker_end, "  ".into(), title_st);
+                        at.icon = Some(ic);
+                        atoms.push(at);
+                        atoms.push(Atom::repl(co.marker_end, co.marker_end, format!(" {kind_title}"), title_st));
+                    }
+                    None => atoms.push(Atom::repl(co.marker_start, co.marker_end, format!("{} {kind_title}", callout_icon(&co.kind)), title_st)),
                 }
-                atoms.push(Atom::repl(co.marker_start, co.marker_end, label, title_st));
             }
             let (t, _) = self.inline_atoms(ctx, text, co.marker_end, text.len(), title_st, reveal, false);
             atoms.extend(t);
@@ -1035,9 +1074,24 @@ impl Layout {
                 } else {
                     let g = TASK_GLYPHS.iter().find(|(c, _)| *c == tk).map_or("☐", |p| p.1);
                     let st = if tk == ' ' { Style::fg(th.muted) } else { Style::fg(th.accent).bold() };
-                    prefix.push(src_seg(x, 2, &format!("{g} "), st, lm.task_start, lm.task_end));
+                    // Obsidian's rounded checkbox, as a crisp inline image
+                    let icon = match (ctx.images, th.muted.rgb(), th.accent.rgb()) {
+                        (Some(imgs), Some(m), Some(a)) if th.rgb => {
+                            crate::images::checkbox_svg(tk, m, a, th.canvas.rgb().unwrap_or((255, 255, 255))).and_then(|svg| imgs.icon(&svg, m, 0.82))
+                        }
+                        _ => None,
+                    };
+                    match icon {
+                        Some(ic) => {
+                            let mut seg = src_seg(x, 3, "   ", st, lm.task_start, lm.task_end);
+                            seg.icon = Some(ic);
+                            prefix.push(seg);
+                        }
+                        None => prefix.push(src_seg(x, 2, &format!("{g} "), st, lm.task_start, lm.task_end)),
+                    }
                 }
-                x += if reveal_task { tw } else { 2 };
+                let shown = prefix.last().map_or(2, |s| s.w as usize);
+                x += if reveal_task { tw } else { shown };
                 if matches!(tk, 'x' | 'X' | '-') {
                     base = base.over(Style::fg(th.muted).strike());
                 }
@@ -1198,6 +1252,7 @@ impl Layout {
                 units: 0,
                 n: 0,
                 d: 0,
+                icon: None,
             });
             rows.push(r);
         }
@@ -1240,6 +1295,7 @@ impl Layout {
             units: 0,
             n: 0,
             d: 0,
+            icon: None,
         };
         for s in embeds {
             let _ = reveal;
@@ -1394,6 +1450,7 @@ impl Layout {
                         units: 0,
                         n: 0,
                         d: 0,
+                        icon: None,
                     });
                     row.end_x = px as u16;
                     out.push(row);
@@ -1428,7 +1485,7 @@ impl Layout {
         let w = ctx.width;
         let is_open = i == b.start;
         let is_close = b.closed && i == b.end - 1;
-        let pad = Seg { x: 0, w: 1, text: " ".into(), style: Style::new(), a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 };
+        let pad = Seg { x: 0, w: 1, text: " ".into(), style: Style::new(), a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0, icon: None };
         if is_open || is_close {
             if active || ctx.mode == Mode::Source {
                 let atoms = self.raw_atoms(text, 0, text.len(), th.marker());
@@ -1453,6 +1510,7 @@ impl Layout {
                 units: 0,
                 n: 0,
                 d: 0,
+                icon: None,
             });
             r.end_x = 1;
             return vec![r];
@@ -1503,6 +1561,7 @@ impl Layout {
                         units: 0,
                         n: 0,
                         d: 0,
+                        icon: None,
                     });
                 }
             }
@@ -1563,6 +1622,7 @@ impl Layout {
                 units: 0,
                 n: 0,
                 d: 0,
+                icon: None,
             });
             r.fill = fill;
             r.end_x = x as u16;
@@ -1614,6 +1674,7 @@ impl Layout {
                 units: 0,
                 n: 0,
                 d: 0,
+                icon: None,
             });
             return vec![r];
         }
@@ -1631,6 +1692,7 @@ impl Layout {
                 units: 0,
                 n: 0,
                 d: 0,
+                icon: None,
             });
             return vec![r];
         }
@@ -1644,8 +1706,21 @@ impl Layout {
                 va += 1;
             }
             let lab = crate::text::pad_to(key, kw);
-            let prefix =
-                vec![Seg { x: 0, w: kw as u16, text: lab, style: Style::fg(th.muted), a: 0, b: va, src: true, run: false, scale: 1, units: 0, n: 0, d: 0 }];
+            let prefix = vec![Seg {
+                x: 0,
+                w: kw as u16,
+                text: lab,
+                style: Style::fg(th.muted),
+                a: 0,
+                b: va,
+                src: true,
+                run: false,
+                scale: 1,
+                units: 0,
+                n: 0,
+                d: 0,
+                icon: None,
+            }];
             let val = &text[va..];
             let atoms = if val.starts_with('[') && val.ends_with(']') {
                 let mut v = self.raw_atoms(text, va, text.len(), Style::fg(th.tag_fg));
@@ -1744,7 +1819,7 @@ impl Layout {
         let bst = Style::fg(th.border);
         let border = |l: &str, mid: &str, r: &str| -> Seg {
             let s = format!("{l}{}{r}", m.widths.iter().map(|w| "─".repeat(w + 2)).collect::<Vec<_>>().join(mid));
-            Seg { x: 0, w: str_width(&s) as u16, text: s, style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 }
+            Seg { x: 0, w: str_width(&s) as u16, text: s, style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0, icon: None }
         };
         if i == b.start + 1 {
             let mut r = VRow::new(0, text.len());
@@ -1762,6 +1837,7 @@ impl Layout {
                 units: 0,
                 n: 0,
                 d: 0,
+                icon: None,
             });
             return vec![r];
         }
@@ -1778,7 +1854,7 @@ impl Layout {
         for r in 0..h {
             let mut row = VRow::new(0, text.len());
             let mut x = 0usize;
-            row.segs.push(Seg { x: 0, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 });
+            row.segs.push(Seg { x: 0, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0, icon: None });
             x += 1;
             for c in 0..m.widths.len() {
                 let parts: &[Seg] = wrapped.get(c).and_then(|w| w.get(r)).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -1794,7 +1870,21 @@ impl Layout {
                     row.segs.push(s);
                 }
                 x += m.widths[c] + 2;
-                row.segs.push(Seg { x: x as u16, w: 1, text: "│".into(), style: bst, a: 0, b: 0, src: false, run: false, scale: 1, units: 0, n: 0, d: 0 });
+                row.segs.push(Seg {
+                    x: x as u16,
+                    w: 1,
+                    text: "│".into(),
+                    style: bst,
+                    a: 0,
+                    b: 0,
+                    src: false,
+                    run: false,
+                    scale: 1,
+                    units: 0,
+                    n: 0,
+                    d: 0,
+                    icon: None,
+                });
                 x += 1;
             }
             row.cursorable = r == 0;
