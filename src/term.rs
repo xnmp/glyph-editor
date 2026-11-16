@@ -57,7 +57,15 @@ fn leave_seq() -> String {
 
 impl Terminal {
     pub fn open() -> std::io::Result<Terminal> {
-        let path = std::ffi::CString::new("/dev/tty").unwrap();
+        // macOS: poll() does not work on /dev/tty, so open the real tty device behind stdin.
+        #[cfg(target_os = "macos")]
+        let real = unsafe {
+            let n = libc::ttyname(0);
+            if n.is_null() { None } else { Some(std::ffi::CStr::from_ptr(n).to_owned()) }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let real = None;
+        let path = real.unwrap_or_else(|| std::ffi::CString::new("/dev/tty").unwrap());
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
         let fd = if fd < 0 { 0 } else { fd };
         if unsafe { libc::isatty(fd) } == 0 {

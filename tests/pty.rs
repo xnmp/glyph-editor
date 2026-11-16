@@ -30,7 +30,7 @@ fn spawn(args: &[&str], dir: &std::path::Path, cols: u16, rows: u16) -> Pty {
 fn spawn_env(args: &[&str], dir: &std::path::Path, cols: u16, rows: u16, env: &[(&str, &str)]) -> Pty {
     let (mut m, mut s) = (0, 0);
     unsafe {
-        assert_eq!(libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()), 0);
+        assert_eq!(libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), 0);
     }
     set_size(m, cols, rows);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_glyph"));
