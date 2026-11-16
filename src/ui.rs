@@ -42,7 +42,7 @@ impl App {
         }
         let fonts = Fonts::get();
         let font_px = ch as f32 * 0.7;
-        let params = Params { width_px: 1.0e6, font_px, line_height: ch as f32 / font_px, pad_top: 0.0, cell_w: cw, cell_h: ch };
+        let params = Params { width_px: 1.0e6, font_px, line_height: ch as f32 / font_px, pad_top: 0.0, hang: 0.0, cell_w: cw, cell_h: ch };
         let mut pieces = vec![];
         let mut pos = 0;
         for (t, st) in runs {
