@@ -106,6 +106,8 @@ pub struct Params {
     pub line_height: f32,
     /// extra space above the first line, px (heading margins)
     pub pad_top: f32,
+    /// wrapped lines start at this x, px: the hanging indent under a list marker
+    pub hang: f32,
     pub cell_w: u32,
     pub cell_h: u32,
 }
@@ -270,19 +272,19 @@ pub fn layout(pieces: Vec<Piece>, p: &Params) -> Typeset {
                 // trailing space hangs at the end of the line
                 cur.push(G { w: 0.0, ..g });
                 lines_g.push(vec![]);
-                x = 0.0;
+                x = p.hang;
                 last_space = None;
                 continue;
             }
             match last_space {
                 Some(ls) if ls < cur.len() && ls > 0 => {
                     let carry = cur.split_off(ls);
-                    x = carry.iter().map(|g| g.w).sum();
+                    x = p.hang + carry.iter().map(|g| g.w).sum::<f32>();
                     lines_g.push(carry);
                 }
                 _ => {
                     lines_g.push(vec![]);
-                    x = 0.0;
+                    x = p.hang;
                 }
             }
             last_space = None;
@@ -306,7 +308,7 @@ pub fn layout(pieces: Vec<Piece>, p: &Params) -> Typeset {
         let f = &fonts.regular.as_scaled(PxScale::from(size));
         let (asc, desc) = (f.ascent(), f.descent());
         let baseline = (y + (height - (asc - desc)) / 2.0 + asc).round();
-        let mut gx = 0.0;
+        let mut gx = if lines.is_empty() { 0.0 } else { p.hang };
         let mut glyphs = lg;
         for g in glyphs.iter_mut() {
             g.x = gx;
@@ -584,7 +586,7 @@ mod tests {
 
     #[test]
     fn tab_stops_align_columns() {
-        let p = Params { width_px: 400.0, font_px: 16.0, line_height: 1.5, pad_top: 0.0, cell_w: 10, cell_h: 20 };
+        let p = Params { width_px: 400.0, font_px: 16.0, line_height: 1.5, pad_top: 0.0, hang: 0.0, cell_w: 10, cell_h: 20 };
         for key in ["a", "longer key"] {
             let mut v = piece("value", key.len());
             v.tab = Some(120.0);
@@ -596,7 +598,7 @@ mod tests {
 
     #[test]
     fn wraps_and_maps() {
-        let p = Params { width_px: 200.0, font_px: 16.0, line_height: 1.5, pad_top: 0.0, cell_w: 10, cell_h: 20 };
+        let p = Params { width_px: 200.0, font_px: 16.0, line_height: 1.5, pad_top: 0.0, hang: 0.0, cell_w: 10, cell_h: 20 };
         let t = layout(vec![piece("The quick brown fox jumps over the lazy dog again and again", 0)], &p);
         assert!(t.map.lines.len() >= 2, "wrapped");
         // every line fits
@@ -623,6 +625,24 @@ mod tests {
         let img = t.render(&Marks { caret: Some(4), caret_color: (255, 255, 255), ..Default::default() });
         assert_eq!(img.height(), t.map.rows as u32 * 20);
         assert!(img.pixels().any(|p| p[3] > 200), "text drawn");
+    }
+
+    #[test]
+    fn hanging_indent_keeps_marker_and_text_on_one_baseline() {
+        let p = Params { width_px: 200.0, font_px: 16.0, line_height: 1.5, pad_top: 0.0, hang: 30.0, cell_w: 10, cell_h: 20 };
+        let mut body = piece("The quick brown fox jumps over the lazy dog again", 3);
+        body.tab = Some(30.0);
+        let t = layout(vec![piece("1. ", 0), body], &p);
+        assert!(t.lines.len() >= 2, "wrapped");
+        // the marker starts the first line, the text starts at the indent on every line
+        assert_eq!(t.map.x_of(0, 0), 0.0);
+        assert!((t.map.x_of(0, 3) - 30.0).abs() < 0.5);
+        for (k, l) in t.lines.iter().enumerate().skip(1) {
+            assert_eq!(l.glyphs[0].x, 30.0, "line {k} hangs under the text");
+            assert!(l.glyphs.last().map_or(0.0, |g| g.x + g.w) <= 200.0 + 0.01);
+        }
+        // marker and text are glyphs of the same line, so they share its baseline
+        assert!(t.lines[0].glyphs.iter().any(|g| g.a == 0) && t.lines[0].glyphs.iter().any(|g| g.a == 3));
     }
 
     #[test]

@@ -727,6 +727,7 @@ impl Layout {
         prefix: Vec<Seg>,
         cont_prefix: &[Seg],
         x: usize,
+        hang: usize,
         heading: Option<u8>,
         fill: Option<Style>,
     ) -> Option<Vec<VRow>> {
@@ -786,6 +787,7 @@ impl Layout {
                     if last.src
                         && !last.text.is_empty()
                         && last.b == at.a
+                        && at.tab_to.is_none()
                         && last.face == face
                         && last.fg == fg
                         && last.bg == bg
@@ -807,6 +809,7 @@ impl Layout {
             font_px: t.font_px,
             line_height: if heading.is_some() { 1.25 } else { t.line_height },
             pad_top,
+            hang: (hang as u32 * t.cell_w) as f32,
             cell_w: t.cell_w,
             cell_h: t.cell_h,
         };
@@ -857,7 +860,7 @@ impl Layout {
         let st = th.heading_style(1);
         let atoms = self.raw_atoms(title, 0, title.len(), st);
         // typeset: line index usize::MAX → no caret/selection marks
-        let typeset = if ctx.typo.is_some() { self.typeset_rows(ctx, usize::MAX, title, &atoms, vec![], &[], 0, Some(1), None) } else { None };
+        let typeset = if ctx.typo.is_some() { self.typeset_rows(ctx, usize::MAX, title, &atoms, vec![], &[], 0, 0, Some(1), None) } else { None };
         let mut rows = match ctx.heading_mode {
             _ if typeset.is_some() => typeset.unwrap(),
             HeadingMode::Osc66 => multicell_rows(title, &atoms, heading_scale(1), None, ctx.width),
@@ -1378,7 +1381,7 @@ impl Layout {
                     let open = block_active || co.fold == b'+';
                     title_atoms.push(Atom::repl(text.len(), text.len(), if open { "  ▾".into() } else { "  ▸".into() }, Style::fg(th.muted)));
                 }
-                if let Some(rows) = self.typeset_rows(ctx, i, text, &title_atoms, pre, &cont_prefix, px, None, fill) {
+                if let Some(rows) = self.typeset_rows(ctx, i, text, &title_atoms, pre, &cont_prefix, px, 0, None, fill) {
                     return rows;
                 }
             }
@@ -1392,6 +1395,8 @@ impl Layout {
 
         // list markers, indentation
         let mut lead_end = info.content;
+        // the marker as typeset atoms: drawn in the item's image, on its first baseline
+        let mut lead: Option<Vec<Atom>> = None;
         if let Some(lm) = &info.lst {
             let depth = lm.depth;
             let ind = crate::text::indent_width(&text[info.quote_end..lm.start]);
@@ -1413,6 +1418,9 @@ impl Layout {
                 let tw = str_width(&t.replace('\t', " "));
                 prefix.push(src_seg(x, tw, &t.replace('\t', " "), st, lm.start, sp_end));
                 x += tw;
+                if lm.task.is_none() {
+                    lead = Some(self.raw_atoms(text, lm.start, sp_end, st));
+                }
             } else if lm.task.is_some() {
                 // tasks show a checkbox instead of a bullet (Obsidian style)
                 prefix.push(src_seg(x, 0, "", Style::new(), lm.start, sp_end));
@@ -1422,6 +1430,7 @@ impl Layout {
                 let label = format!("{glyph}{}", " ".repeat(srcw - 1));
                 prefix.push(src_seg(x, srcw, &label, Style::fg(th.muted), lm.start, sp_end));
                 x += srcw;
+                lead = Some(vec![Atom::repl(lm.start, sp_end, glyph.into(), Style::fg(th.muted))]);
             }
             if let Some(tk) = lm.task {
                 let reveal_task = reveal.is_some_and(|r| lm.task_start <= r && r < lm.task_start + 3);
@@ -1492,7 +1501,7 @@ impl Layout {
             base = base.over(hst);
             if ctx.typo.is_some() && info.quote_depth == 0 {
                 let atoms = self.heading_atoms(ctx, text, info, active_line, base, reveal);
-                if let Some(rows) = self.typeset_rows(ctx, i, text, &atoms, vec![], &[], 0, Some(info.level), fill) {
+                if let Some(rows) = self.typeset_rows(ctx, i, text, &atoms, vec![], &[], 0, 0, Some(info.level), fill) {
                     return rows;
                 }
             }
@@ -1584,8 +1593,22 @@ impl Layout {
         }
         let cont_x = prefix.iter().map(|s| (s.x + s.w) as usize).max().unwrap_or(0);
         if ctx.typo.is_some() && !is_heading && !atoms.is_empty() {
-            let x = if is_heading { 0 } else { cont_x };
-            if let Some(rows) = self.typeset_rows(ctx, i, text, &atoms, prefix.clone(), &cont_prefix, x, None, fill) {
+            // A cell-text marker sits on the block's first row while the typeset text has its
+            // own baseline, so the two drift apart as the line pitch grows. Typeset the marker
+            // with its item instead: the image starts at the marker and the text hangs after it.
+            let rows = match lead.filter(|l| !l.is_empty()) {
+                Some(mut all) => {
+                    let k = prefix.len() - 1;
+                    let mx = prefix[k].x as usize;
+                    let hang = cont_x - mx;
+                    let first = all.len();
+                    all.extend(atoms.iter().cloned());
+                    all[first].tab_to = ctx.typo.map(|t| (hang as u32 * t.cell_w) as f32);
+                    self.typeset_rows(ctx, i, text, &all, prefix[..k].to_vec(), &cont_prefix[..k], mx, hang, None, fill)
+                }
+                None => self.typeset_rows(ctx, i, text, &atoms, prefix.clone(), &cont_prefix, cont_x, 0, None, fill),
+            };
+            if let Some(rows) = rows {
                 let img_x = if info.lst.is_some() || info.quote_depth > 0 { cont_x } else { 0 };
                 let rows = self.attach_images(ctx, text, &spans, rows, reveal, img_x);
                 return self.attach_embeds(ctx, text, &spans, rows, reveal, img_x);
@@ -2034,7 +2057,7 @@ impl Layout {
         if i == b.start
             && ctx.typo.is_some()
             && let Some(rows) =
-                self.typeset_rows(ctx, i, text, &[Atom::repl(0, text.len(), "Properties".into(), Style::fg(th.muted).bold())], vec![], &[], 0, None, fill)
+                self.typeset_rows(ctx, i, text, &[Atom::repl(0, text.len(), "Properties".into(), Style::fg(th.muted).bold())], vec![], &[], 0, 0, None, fill)
         {
             return rows;
         }
@@ -2126,7 +2149,7 @@ impl Layout {
                     }
                     ta.push(at);
                 }
-                if let Some(rows) = self.typeset_rows(ctx, i, text, &ta, vec![], &[], 0, None, fill) {
+                if let Some(rows) = self.typeset_rows(ctx, i, text, &ta, vec![], &[], 0, 0, None, fill) {
                     return rows;
                 }
             }

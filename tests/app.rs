@@ -737,6 +737,30 @@ fn typeset_prose_is_drawn_as_images_and_editable() {
 }
 
 #[test]
+fn typeset_list_markers_are_drawn_with_their_item() {
+    let mut h = typeset_harness(80, 20, &[("a.md", "para\n\n1. first item\n- bullet item\n- [ ] task item")]);
+    h.keys("ctrl+home");
+    let s = h.frame();
+    // number and bullet are in the image (one baseline with the text), not cell text
+    assert!(!s.contains("1.") && !s.contains('•'), "markers are not cell text: {s}");
+    // the item's image starts at the marker column, where the paragraph's does
+    let p = h.vt.placeholder_cells();
+    let left = |y: usize| p.iter().filter(|c| c.4 == y).map(|c| c.3).min();
+    let ys: Vec<usize> = {
+        let mut v: Vec<usize> = p.iter().map(|c| c.4).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    assert_eq!(left(ys[0]), left(ys[2]), "ordered item starts at the text margin");
+    // the caret can sit inside the marker and edits land there
+    h.keys("down down home left");
+    assert_eq!(h.app.tabs[0].ed.cursor, glyph::buffer::Pos::new(2, 2));
+    h.type_text("X");
+    assert_eq!(h.text().lines().nth(2), Some("1.X first item"));
+}
+
+#[test]
 fn typeset_vertical_motion_walks_wrapped_lines() {
     let para = "word ".repeat(60);
     let mut h = typeset_harness(60, 30, &[("a.md", &format!("{}\nnext", para.trim_end()))]);
