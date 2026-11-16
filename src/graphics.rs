@@ -9,14 +9,30 @@ use crate::diacritics::DIACRITICS;
 pub const PLACEHOLDER: char = '\u{10EEEE}';
 const CHUNK: usize = 4096;
 
+/// Inside tmux, graphics commands must be wrapped in a passthrough sequence.
+pub fn in_tmux() -> bool {
+    static IN_TMUX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !cfg!(test) && *IN_TMUX.get_or_init(|| std::env::var_os("TMUX").is_some())
+}
+
 fn apc(out: &mut String, ctrl: &str, payload: &str) {
-    out.push_str("\x1b_G");
+    let tmux = in_tmux();
+    let esc = if tmux { "\x1b\x1b" } else { "\x1b" };
+    if tmux {
+        out.push_str("\x1bPtmux;");
+    }
+    out.push_str(esc);
+    out.push_str("_G");
     out.push_str(ctrl);
     if !payload.is_empty() {
         out.push(';');
         out.push_str(payload);
     }
-    out.push_str("\x1b\\");
+    out.push_str(esc);
+    out.push('\\');
+    if tmux {
+        out.push_str("\x1b\\");
+    }
 }
 
 /// Transmit PNG data. `virtual_place` also creates a Unicode-placeholder

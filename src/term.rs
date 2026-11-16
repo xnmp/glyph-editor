@@ -272,6 +272,23 @@ impl Terminal {
         if caps.graphics && (kitty || ghostty) {
             caps.placeholders = true;
         }
+        // tmux: the graphics query reply does not come back, so trust the outer
+        // terminal's environment and use Unicode placeholders (which tmux carries).
+        if gfx::in_tmux() && (std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some() || std::env::var_os("KITTY_WINDOW_ID").is_some()) {
+            caps.graphics = true;
+            caps.placeholders = true;
+            if let Ok(out) = std::process::Command::new("tmux").args(["display", "-p", "#{client_cell_width} #{client_cell_height}"]).output() {
+                let t = String::from_utf8_lossy(&out.stdout);
+                let mut it = t.split_whitespace().filter_map(|x| x.parse::<u32>().ok());
+                if let (Some(w), Some(h)) = (it.next(), it.next())
+                    && w > 0
+                    && h > 0
+                {
+                    caps.cell_w = w;
+                    caps.cell_h = h;
+                }
+            }
+        }
         if caps.cell_w == 0 || caps.cell_h == 0 {
             caps.cell_w = 10;
             caps.cell_h = 20;
